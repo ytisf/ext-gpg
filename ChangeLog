@@ -1,0 +1,183 @@
+2012-01-30  Werner Koch  <wk@gnupg.org>
+
+	Release 1.4.12.
+
+	Fix ChangeLog creation rule.
+	* Makefile.am (gen-ChangeLog): Use set -e.  Fixes commit b99e77d5.
+
+	Add Ukrainian translation.
+	* po/uk.po: New.
+	* po/LINGUAS: Add uk.po.
+
+	Update GNU helper files.
+	* scripts/config.guess, scripts/config.rpath: Update to version
+	2012-01-01.
+	* scripts/config.rpath, scripts/compile, scripts/depcomp: Update to
+	modern version.
+	* scripts/texinfo.tex: Update from current gnulib.
+
+	Update documentation.
+	* doc/gpg.texi, doc/specify-user-id.texi, doc/yat2m.c: Update from
+	current GnuPG master (commit bdde44a).
+
+	Require gitlog-to-changelog to be installed.
+	* Makefile.am (GITLOG_TO_CHANGELOG): New.
+	(gen-ChangeLog): Use installed version of gitlog-to-changelog.
+
+2012-01-20  Werner Koch  <wk@gnupg.org>
+
+	Do not copy default merge commit log entries into the ChangeLog.
+	* scripts/gitlog-to-changelog: Skip merge commits.
+
+2012-01-20  David Shaw  <dshaw@jabberwocky.com>
+
+	Changes to --min-cert-level should cause a trustdb rebuild (issue 1366)
+	* g10/gpgv.c, g10/trustdb.c (read_trust_options): Add min_cert_level
+
+	* g10/trustdb.c (check_trustdb_stale): Request a rebuild if
+	  pending_check_trustdb is true (set when we detect a trustdb
+	  parameter has changed).
+
+	* g10/keylist.c (public_key_list): Use 'l' in the "tru" with-colons
+	  listing for min_cert_level not matching.
+
+	* g10/tdbio.c (tdbio_update_version_record, create_version_record,
+	  tdbio_db_matches_options, tdbio_dump_record, tdbio_read_record,
+	  tdbio_write_record): Add a byte for min_cert_level in the tdbio
+	  version record.
+
+2012-01-16  Werner Koch  <wk@gnupg.org>
+
+	w32: Always build with -fno-omit-frame-pointer.
+	This is required due to a bug in the mingw32 runtime.
+	* configure.ac (HAVE_W32_SYSTEM): Force use of -fno-omit-frame-pointer.
+
+	w32: Allow passing a relative name for the tarball.
+	* scripts/mk-w32-dist: Prepend PWD to TARBALL.
+
+	Automate W32 installer building.
+	* doc/README.W32: Document new installer build procedure.
+	* scripts/autogen.sh: Pass all args to the installer (regression fix).
+	* scripts/conf-w32/README: Remove from repo.
+	* scripts/conf-w32/bzip2-1.diff: Remove from repo.
+	* scripts/mk-w32-dist: Rewrite.
+	* scripts/w32installer.nsi [WITH_PATCHES]: Use constant patch file
+	name.
+
+2012-01-13  Werner Koch  <wk@gnupg.org>
+
+	Add a DECRYPTION_INFO status.
+	* g10/status.h (STATUS_DECRYPTION_INFO): New.
+	* g10/status.c (get_status_string): Add new status string.
+	* g10/encr-data.c: Include status.h.
+	(decrypt_data): Print STATUS_DECRYPTION_INFO.
+
+	Include bzip2 code to ease building for W32.
+	* bzlib/: Include bzip2 code.
+	* configure.ac [W32]: Force use of included bzip2 code.
+	* scripts/autogen.sh <--build-w32>: Do not pass --with-bzip option.
+	* Makefile.am (SUBDIRS): Add bzip.  Use it only under W32.
+
+2012-01-12  Werner Koch  <wk@gnupg.org>
+
+	Allow building with the 32 bit mingw-w64 toolchain.
+	* scripts/autogen.sh <--build-w32>: Support i686-w64-mingw32 and use
+	it by default if installed.
+	* keyserver/gpgkeys_ldap.c (my_ldap_start_tls_s): Define macro
+	depending on compiler version.
+	(main): Use new macro.
+	* util/miscutil.c [!HAVE_TIMEGM]: Add prototype for the timegm
+	autoconf replacement function.
+
+	gpg: Remove unused fields from a trust data structure.
+	The functions tdbio_read_record and tdbio_write_record control the
+	actual on-disk format.  Thus there is no need to keep reserved fields
+	in the internal data structure.
+
+	* g10/tdbio.h (struct trust_record): Remove reserved fields.
+
+	Typo fixes and comment re-formatting.
+
+2012-01-11  David Shaw  <dshaw@jabberwocky.com>
+
+	Distribute dotlock.h.
+
+2012-01-10  David Shaw  <dshaw@jabberwocky.com>
+
+	Refresh sample keys.
+
+2012-01-10  Werner Koch  <wk@gnupg.org>
+
+	Allow use of a standard space separated fingerprint.
+	We allow a single or a double space in the middle of the fingerprint
+	to help with c+p fingerprints from an HTML pages which are not being
+	enclosed in a "pre" tag.
+	* g10/getkey.c (classify_user_id): Check for space separated GPG
+	fingerprint.
+
+	Replace file locking by the new portable dotlock code.
+	* include/dotlock.h: New.  From current gnupg master.
+	* util/dotlock.c: Ditto.  Include util.h.  The major changes done in
+	master are: Factor Unix and W32 specific code out into specific
+	functions.  Define HAVE_POSIX_SYSTEM.  Rearrange some functions.
+	(disable_dotlock): Rename to dotlock_disable.
+	(create_dotlock): Rename to dotlock_create and add a dummy arg.
+	(destroy_dotlock): Rename to dotlock_destroy.
+	(make_dotlock): Rename to dotlock_take.
+	(release_dotlock): Rename to dotlock_release.
+	(remove_lockfiles): Rename to dotlock_remove_lockfiles.
+
+	Update copyright years.
+	* util/argparse.c (default_strusage): Update printed copyright year.
+
+	Use gcc pragmas to suppress some warnings.
+	* configure.ac (AH_BOTTOM): Add GNUPG_GCC_VERSION macro.
+	* util/estream-printf.c (pr_float): Use new gcc pragma to ignore a
+	warning about a non-literal format.
+	* util/miscutil.c (asctimestamp): Ditto.
+	* cipher/md.c (md_stop_debug): Use new gcc pragme to ignore a warning
+	* about a set but unused variable.
+
+	Update gitlog-to-changelog.
+	* scripts/gitlog-to-changelog: Update from gnupg master.
+	* Makefile.am (gen-ChangeLog): Add new options.
+	* scripts/autogen.sh: Fix typo in URL.  Reported by Gilles Espinasse.
+
+2011-12-28  David Shaw  <dshaw@jabberwocky.com>
+
+	Use the longest key ID available when talking to a HKP server.
+	This is issue 1340.  Now that PKSD is dead, and SKS supports long key
+	IDs, this is safe to do.  Patch from Daniel Kahn Gillmor
+	<dkg@fifthhorseman.net>.
+
+2011-12-02  Werner Koch  <wk@gnupg.org>
+
+	Generate the ChangeLog from commit logs.
+	* scripts/gitlog-to-changelog: New script.  Taken from gnulib.
+	* scripts/git-log-fix: New file.
+	* scripts/git-log-footer: New file.
+	* scripts/git-hooks/commit-msg: New script.
+	* autogen.sh: Install commit-msg hook for git.
+	* doc/HACKING: Describe the ChangeLog policy.
+	* Makefile.am (EXTRA_DIST): Add new files.
+	(gen-ChangeLog): New.
+	(dist-hook): Run gen-ChangeLog.
+
+	Rename all ChangeLog files to ChangeLog-2011.
+	* ChangeLog: New file.
+
+2011-12-01  Werner Koch  <wk@gnupg.org>
+
+	NB: Changes done before December 1st, 2011 are described in
+	per directory files named ChangeLog-2011.  See doc/HACKING for
+	details.
+
+        -----
+	Copyright (C) 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005,
+	              2006, 2007, 2008, 2009, 2010, 2011,
+	              2012 Free Software Foundation, Inc.
+
+	Copying and distribution of this file and/or the original GIT
+	commit log messages, with or without modification, are
+	permitted provided the copyright notice and this notice are
+	preserved.
