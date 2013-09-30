@@ -2050,7 +2050,7 @@ main (int argc, char **argv)
 #endif
 
     /* Initialize the secure memory. */
-    if (!gcry_control (GCRYCTL_INIT_SECMEM, 32768, 0))
+    if (!gcry_control (GCRYCTL_INIT_SECMEM, 131072, 0))
       got_secmem = 1;
 #if defined(HAVE_GETUID) && defined(HAVE_GETEUID)
     /* There should be no way to get to this spot while still carrying

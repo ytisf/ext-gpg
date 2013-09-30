@@ -7,15 +7,8 @@
              2012, 2013 Free Software Foundation, Inc.
 
 
-
-
 INTRODUCTION
 ============
-Changed by Yuval (tisf) Nativ of See-Security Technologies.
-    http://see-security.com      http://hackingdefined.org
-
-Changed by  Bar Hofesh (Ba7a7chy) of Safe-T Data.
-    http://safe-t.com
 
 GnuPG is GNU's tool for secure communication and data storage.  It can
 be used to encrypt data and to create digital signatures.  It includes
@@ -34,9 +27,7 @@ OpenPGP-only version.
 
 
 
-BUILD INS
-
-TRUCTIONS
+BUILD INSTRUCTIONS
 ==================
 
 GnuPG 2.0 depends on the following packages:

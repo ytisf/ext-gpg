@@ -1774,7 +1774,7 @@ ask_algo (int addmode, int *r_subkey_algo, unsigned int *r_usage)
 static unsigned
 ask_keysize (int algo, unsigned int primary_keysize)
 {
-  unsigned int nbits, min, def = DEFAULT_STD_KEYSIZE, max=4096;
+  unsigned int nbits, min, def = DEFAULT_STD_KEYSIZE, max=16384;
   int for_subkey = !!primary_keysize;
   int autocomp = 0;
 
