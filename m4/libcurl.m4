@@ -1,7 +1,7 @@
 # LIBCURL_CHECK_CONFIG ([DEFAULT-ACTION], [MINIMUM-VERSION],
 #                       [ACTION-IF-YES], [ACTION-IF-NO])
 # ----------------------------------------------------------
-#      David Shaw <dshaw@jabberwocky.com>   Jan-16-2007
+#      David Shaw <dshaw@jabberwocky.com>   May-09-2006
 #
 # Checks for libcurl.  DEFAULT-ACTION is the string yes or no to
 # specify whether to default to --with-libcurl or --without-libcurl.
@@ -65,13 +65,21 @@ AC_DEFUN([LIBCURL_CHECK_CONFIG],
      AC_PROG_AWK
 
      _libcurl_version_parse="eval $AWK '{split(\$NF,A,\".\"); X=256*256*A[[1]]+256*A[[2]]+A[[3]]; print X;}'"
+     # More recent versions of curl-config have a direct --vernum
+     # option, but we'd like this code to work with older versions as
+     # well, so just convert --version.
+     _libcurl_vernum_parse="eval $AWK '{printf \"0x%06X\",\$NF}'"
 
      _libcurl_try_link=yes
 
      if test -d "$_libcurl_with" ; then
         LIBCURL_CPPFLAGS="-I$withval/include"
         _libcurl_ldflags="-L$withval/lib"
-        AC_PATH_PROG([_libcurl_config],["$withval/bin/curl-config"])
+        if test -x "$withval/bin/curl-config" ; then
+          _libcurl_config="$withval/bin/curl-config"
+        else
+          _libcurl_config=
+        fi
      else
 	AC_PATH_PROG([_libcurl_config],[curl-config])
      fi
@@ -143,7 +151,7 @@ AC_DEFUN([LIBCURL_CHECK_CONFIG],
 
            AC_LINK_IFELSE([AC_LANG_PROGRAM([[#include <curl/curl.h>]],[[
 /* Try and use a few common options to force a failure if we are
-   missing symbols or can't link. */
+   missing symbols or cannot link. */
 int x;
 curl_easy_setopt(NULL,CURLOPT_URL,NULL);
 x=CURL_ERROR_SIZE;
@@ -152,7 +160,7 @@ x=CURLOPT_FILE;
 x=CURLOPT_ERRORBUFFER;
 x=CURLOPT_STDERR;
 x=CURLOPT_VERBOSE;
-]])],libcurl_cv_lib_curl_usable=yes,libcurl_cv_lib_curl_usable=no)
+]])],[libcurl_cv_lib_curl_usable=yes],[libcurl_cv_lib_curl_usable=no])
 
            CPPFLAGS=$_libcurl_save_cppflags
            LIBS=$_libcurl_save_libs
@@ -162,39 +170,17 @@ x=CURLOPT_VERBOSE;
 
         if test $libcurl_cv_lib_curl_usable = yes ; then
 
+	   # Does curl_free() exist in this version of libcurl?
+	   # If not, fake it with free()
+
            _libcurl_save_cppflags=$CPPFLAGS
            CPPFLAGS="$CPPFLAGS $LIBCURL_CPPFLAGS"
            _libcurl_save_libs=$LIBS
            LIBS="$LIBS $LIBCURL"
 
-	   # Check for some libcurl functions that aren't in all
-           # versions.
-
-           AC_CHECK_FUNCS([curl_free curl_easy_escape curl_easy_unescape])
-
-           AH_BOTTOM([
-#ifdef HAVE_LIBCURL
-
-/* Define curl_free() via free() if our version of curl lacks
-   curl_free() */
-#if !defined(curl_free) && !defined(HAVE_CURL_FREE)
-#define curl_free(a) free((a))
-#endif
-
-/* Define curl_easy_escape() via curl_escape() if our version of curl
-   lacks curl_easy_escape() */
-#if !defined(curl_easy_escape) && !defined(HAVE_CURL_EASY_ESCAPE)
-#define curl_easy_escape(a,b,c) curl_escape((b),(c))
-#endif
-
-/* Define curl_easy_unescape() via curl_unescape() if our version of
-   curl lacks curl_easy_unescape() */
-#if !defined(curl_easy_unescape) && !defined(HAVE_CURL_EASY_UNESCAPE)
-#define curl_easy_unescape(a,b,c) curl_unescape((b),(c))
-#endif
-
-#endif /* HAVE_LIBCURL */
-])
+           AC_CHECK_FUNC(curl_free,,
+  	      AC_DEFINE(curl_free,free,
+		[Define curl_free() as free() if our version of curl lacks curl_free.]))
 
            CPPFLAGS=$_libcurl_save_cppflags
            LIBS=$_libcurl_save_libs
@@ -205,6 +191,10 @@ x=CURLOPT_VERBOSE;
              [Define to 1 if you have a functional curl library.])
            AC_SUBST(LIBCURL_CPPFLAGS)
            AC_SUBST(LIBCURL)
+
+	   _libcurl_vernum=`echo $_libcurl_version | $_libcurl_vernum_parse`
+
+	   AC_DEFINE_UNQUOTED(LIBCURL_VERNUM,$_libcurl_vernum,[The version of the libcurl library in packed hex form])
 
            for _libcurl_feature in $_libcurl_features ; do
 	      AC_DEFINE_UNQUOTED(AS_TR_CPP(libcurl_feature_$_libcurl_feature),[1])
@@ -246,6 +236,7 @@ x=CURLOPT_VERBOSE;
      unset _libcurl_protocol
      unset _libcurl_protocols
      unset _libcurl_version
+     unset _libcurl_vernum
      unset _libcurl_ldflags
   fi
 

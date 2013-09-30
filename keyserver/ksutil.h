@@ -1,14 +1,14 @@
 /* ksutil.h
  * Copyright (C) 2004, 2005, 2006 Free Software Foundation, Inc.
  *
- * This file is part of GNUPG.
+ * This file is part of GnuPG.
  *
- * GNUPG is free software; you can redistribute it and/or modify
+ * GnuPG is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 3 of the License, or
  * (at your option) any later version.
  *
- * GNUPG is distributed in the hope that it will be useful,
+ * GnuPG is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
@@ -79,6 +79,11 @@ struct keylist
 unsigned int set_timeout(unsigned int seconds);
 int register_timeout(void);
 
+#ifdef HAVE_W32_SYSTEM
+void w32_init_sockets (void);
+#endif
+
+
 enum ks_action {KS_UNKNOWN=0,KS_GET,KS_GETNAME,KS_SEND,KS_SEARCH};
 
 enum ks_search_type {KS_SEARCH_SUBSTR,KS_SEARCH_EXACT,
@@ -136,9 +141,9 @@ struct curl_writer_ctx
 size_t curl_writer(const void *ptr,size_t size,size_t nmemb,void *cw_ctx);
 void curl_writer_finalize(struct curl_writer_ctx *ctx);
 
+int ks_hextobyte (const char *s);
+int ks_toupper (int c);
+int ks_strcasecmp (const char *a, const char *b);
 
-/* -- From ksmalloc.c or ../include/memory.h -- */
-void *xtrymalloc (size_t n);
-void xfree (void *p);
 
 #endif /* !_KSUTIL_H_ */

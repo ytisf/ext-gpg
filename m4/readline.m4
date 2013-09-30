@@ -41,7 +41,7 @@ rl_catch_signals=0;
 rl_inhibit_completion=0;
 rl_attempted_completion_function=NULL;
 rl_completion_matches(NULL,NULL);
-]])],_found_readline=yes,_found_readline=no)
+]])],[_found_readline=yes],[_found_readline=no])
 
         AC_MSG_RESULT([$_found_readline])
 

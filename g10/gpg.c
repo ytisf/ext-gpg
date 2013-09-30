@@ -2020,7 +2020,7 @@ main (int argc, char **argv )
     }
 #endif
     /* initialize the secure memory. */
-    got_secmem=secmem_init( 32768 );
+    got_secmem=secmem_init( 131072 );
     maybe_setuid = 0;
     /* Okay, we are now working under our real uid */
 

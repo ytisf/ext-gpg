@@ -1,6 +1,6 @@
 /* gpgkeys_hkp.c - talk to an HKP keyserver
  * Copyright (C) 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008,
- *               2009 Free Software Foundation, Inc.
+ *               2009, 2012, 2013 Free Software Foundation, Inc.
  *
  * This file is part of GnuPG.
  *
@@ -36,17 +36,31 @@
 #include <errno.h>
 #include <unistd.h>
 #ifdef HAVE_GETOPT_H
-#include <getopt.h>
+# include <getopt.h>
 #endif
 #ifdef HAVE_LIBCURL
-#include <curl/curl.h>
+# include <curl/curl.h>
+/* This #define rigamarole is to enable a hack to fake DNS SRV using
+   libcurl.  It only works if we have getaddrinfo(), inet_ntop(), and
+   a modern enough version of libcurl (7.21.3) so we can use
+   CURLOPT_RESOLVE to feed the resolver from the outside to force
+   libcurl to pass the right SNI. */
+# if (defined(HAVE_GETADDRINFO) && defined(HAVE_INET_NTOP) \
+      && LIBCURL_VERNUM >= 0x071503)
+#  include <sys/types.h>
+#  include <sys/socket.h>
+#  include <netdb.h>
+#  include <arpa/inet.h>
+# else
+#  undef USE_DNS_SRV
+# endif
 #else
-#include "curl-shim.h"
+#  include "curl-shim.h"
 #endif
+#include "util.h"
 #ifdef USE_DNS_SRV
-#include "srv.h"
+# include "srv.h"
 #endif
-#include "compat.h"
 #include "keyserver.h"
 #include "ksutil.h"
 
@@ -60,9 +74,10 @@ static char errorbuffer[CURL_ERROR_SIZE];
 static char *proto,*port;
 
 static size_t
-curl_mrindex_writer(const void *ptr,size_t size,size_t nmemb,void *stream)
+curl_mrindex_writer (const void *ptr,size_t size,size_t nmemb,void *stream)
 {
-  static int checked=0,swallow=0;
+  static int checked = 0;
+  static int swallow = 0;
 
   if(!checked)
     {
@@ -95,8 +110,22 @@ append_path(char *dest,const char *src)
   return strcat(dest,src);
 }
 
+/* Return a pointer into STRING so that appending PATH to STRING will
+   not yield a duplicated slash. */
+static const char *
+appendable_path (const char *string, const char *path)
+{
+  size_t n;
+
+  if (path[0] == '/' && (n=strlen (string)) && string[n-1] == '/')
+    return path+1;
+  else
+    return path;
+}
+
+
 int
-send_key(int *eof)
+send_key(int *r_eof)
 {
   CURLcode res;
   char request[MAX_URL+15];
@@ -104,17 +133,7 @@ send_key(int *eof)
   char keyid[17],state[6];
   char line[MAX_LINE];
   char *key=NULL,*encoded_key=NULL;
-  size_t keysize=1;
-
-  key = xtrymalloc(1);
-  if(!key)
-    {
-      fprintf(console,"gpgkeys: unable to allocate memory for key\n");
-      ret=KEYSERVER_NO_MEMORY;
-      goto fail;
-    }
-
-  key[0]='\0';
+  size_t keylen=0,keymax=0;
 
   /* Read and throw away input until we see the BEGIN */
 
@@ -130,7 +149,7 @@ send_key(int *eof)
     {
       /* i.e. eof before the KEY BEGIN was found.  This isn't an
 	 error. */
-      *eof=1;
+      *r_eof=1;
       ret=KEYSERVER_OK;
       goto fail;
     }
@@ -146,30 +165,36 @@ send_key(int *eof)
       }
     else
       {
-	char *tempkey;
-	keysize+=strlen(line);
-	tempkey=realloc(key,keysize);
-	if(tempkey==NULL)
+	if(strlen(line)+keylen>keymax)
 	  {
-	    fprintf(console,"gpgkeys: unable to reallocate for key\n");
-	    ret=KEYSERVER_NO_MEMORY;
-	    goto fail;
-	  }
-	else
-	  key=tempkey;
+	    char *tmp;
 
-	strcat(key,line);
+	    keymax+=200;
+	    tmp=realloc(key,keymax+1);
+	    if(!tmp)
+	      {
+		free(key);
+		fprintf(console,"gpgkeys: out of memory\n");
+		ret=KEYSERVER_NO_MEMORY;
+		goto fail;
+	      }
+
+	    key=tmp;
+	  }
+
+	strcpy(&key[keylen],line);
+	keylen+=strlen(line);
       }
 
   if(!end)
     {
       fprintf(console,"gpgkeys: no KEY %s END found\n",keyid);
-      *eof=1;
+      *r_eof=1;
       ret=KEYSERVER_KEY_INCOMPLETE;
       goto fail;
     }
 
-  encoded_key=curl_easy_escape(curl,key,keysize);
+  encoded_key=curl_escape(key,keylen);
   if(!encoded_key)
     {
       fprintf(console,"gpgkeys: out of memory\n");
@@ -179,16 +204,13 @@ send_key(int *eof)
 
   free(key);
 
-  key=xtrymalloc(8+strlen(encoded_key)+1);
+  key = strconcat ("keytext=", encoded_key, NULL);
   if(!key)
     {
       fprintf(console,"gpgkeys: out of memory\n");
       ret=KEYSERVER_NO_MEMORY;
       goto fail;
     }
-
-  strcpy(key,"keytext=");
-  strcat(key,encoded_key);
 
   strcpy(request,proto);
   strcat(request,"://");
@@ -221,7 +243,7 @@ send_key(int *eof)
   ret=KEYSERVER_OK;
 
  fail:
-  free(key);
+  xfree (key);
   curl_free(encoded_key);
 
   if(ret!=0 && begin)
@@ -297,15 +319,49 @@ get_key(char *getkey)
     }
   else
     {
+      long status = 0;
+
       curl_writer_finalize(&ctx);
-      if(!ctx.flags.done)
+
+      curl_easy_getinfo (curl, CURLINFO_RESPONSE_CODE, &status);
+
+      if (opt->verbose > 2)
+	fprintf (console, "gpgkeys: HTTP response code is %ld\n", status);
+
+      if (status == 200)
 	{
-	  fprintf(console,"gpgkeys: key %s not found on keyserver\n",getkey);
-	  fprintf(output,"\nKEY 0x%s FAILED %d\n",
-		  getkey,KEYSERVER_KEY_NOT_FOUND);
+	  if (!ctx.flags.done)
+	    {
+	      if (ctx.flags.begun)
+		{
+		  fprintf (console, "gpgkeys: key %s partially retrieved"
+			   " (probably corrupt)\n", getkey);
+		  fprintf (output, "\nKEY 0x%s FAILED %d\n",
+			   getkey, KEYSERVER_KEY_INCOMPLETE);
+		}
+	      else
+		{
+		  fprintf (console, "gpgkeys: key %s can't be retrieved\n",
+			   getkey);
+		  fprintf (output, "\nKEY 0x%s FAILED %d\n",
+			   getkey, KEYSERVER_GENERAL_ERROR);
+		}
+	    }
+	  else
+	    fprintf (output, "\nKEY 0x%s END\n", getkey);
+	}
+      else if (status == 404)
+	{
+	  fprintf (console, "gpgkeys: key %s not found on keyserver\n", getkey);
+	  fprintf (output, "\nKEY 0x%s FAILED %d\n",
+		  getkey, KEYSERVER_KEY_NOT_FOUND);
 	}
       else
-	fprintf(output,"\nKEY 0x%s END\n",getkey);
+	{
+	  fprintf (console, "gpgkeys: key %s can't be retrieved\n", getkey);
+	  fprintf (output, "\nKEY 0x%s FAILED %d\n",
+		  getkey, KEYSERVER_GENERAL_ERROR);
+	}
     }
 
   return KEYSERVER_OK;
@@ -322,7 +378,7 @@ get_name(const char *getkey)
 
   memset(&ctx,0,sizeof(ctx));
 
-  searchkey_encoded=curl_easy_escape(curl,(char *)getkey,0);
+  searchkey_encoded=curl_escape((char *)getkey,0);
   if(!searchkey_encoded)
     {
       fprintf(console,"gpgkeys: out of memory\n");
@@ -330,7 +386,17 @@ get_name(const char *getkey)
       goto fail;
     }
 
-  request=xtrymalloc(MAX_URL+60+strlen(searchkey_encoded));
+  request = strconcat
+    (proto,
+     "://",
+     opt->host,
+     ":",
+     port,
+     opt->path,
+     appendable_path (opt->path,"/pks/lookup?op=get&options=mr&search="),
+     searchkey_encoded,
+     opt->action == KS_GETNAME? "&exact=on":"",
+     NULL);
   if(!request)
     {
       fprintf(console,"gpgkeys: out of memory\n");
@@ -339,18 +405,6 @@ get_name(const char *getkey)
     }
 
   fprintf(output,"NAME %s BEGIN\n",getkey);
-
-  strcpy(request,proto);
-  strcat(request,"://");
-  strcat(request,opt->host);
-  strcat(request,":");
-  strcat(request,port);
-  strcat(request,opt->path);
-  append_path(request,"/pks/lookup?op=get&options=mr&search=");
-  strcat(request,searchkey_encoded);
-
-  if(opt->action==KS_GETNAME)
-    strcat(request,"&exact=on");
 
   if(opt->verbose>2)
     fprintf(console,"gpgkeys: HTTP URL is `%s'\n",request);
@@ -368,22 +422,53 @@ get_name(const char *getkey)
     }
   else
     {
+      long status = 0;
+
       curl_writer_finalize(&ctx);
-      if(!ctx.flags.done)
+
+      curl_easy_getinfo (curl, CURLINFO_RESPONSE_CODE, &status);
+
+      if (opt->verbose > 2)
+	fprintf (console, "gpgkeys: HTTP response code is %ld\n", status);
+
+      if (status == 200)
 	{
-	  fprintf(console,"gpgkeys: key %s not found on keyserver\n",getkey);
-	  ret=KEYSERVER_KEY_NOT_FOUND;
+	  if (!ctx.flags.done)
+	    {
+	      if (ctx.flags.begun)
+		{
+		  fprintf (console, "gpgkeys: key %s partially retrieved"
+			   " (probably corrupt)\n", getkey);
+		  ret = KEYSERVER_KEY_INCOMPLETE;
+		}
+	      else
+		{
+		  fprintf (console, "gpgkeys: key %s can't be retrieved\n",
+			   getkey);
+		  ret = KEYSERVER_GENERAL_ERROR;
+		}
+	    }
+	  else
+	    {
+	      fprintf (output, "\nNAME %s END\n", getkey);
+	      ret = KEYSERVER_OK;
+	    }
+	}
+      else if (status == 404)
+	{
+	  fprintf (console, "gpgkeys: key %s not found on keyserver\n", getkey);
+	  ret = KEYSERVER_KEY_NOT_FOUND;
 	}
       else
 	{
-	  fprintf(output,"\nNAME %s END\n",getkey);
-	  ret=KEYSERVER_OK;
+	  fprintf (console, "gpgkeys: key %s can't be retrieved\n", getkey);
+	  ret = KEYSERVER_GENERAL_ERROR;
 	}
     }
 
  fail:
   curl_free(searchkey_encoded);
-  free(request);
+  xfree (request);
 
   if(ret!=KEYSERVER_OK)
     fprintf(output,"\nNAME %s FAILED %d\n",getkey,ret);
@@ -399,6 +484,7 @@ search_key(const char *searchkey)
   char *searchkey_encoded;
   int ret=KEYSERVER_INTERNAL_ERROR;
   enum ks_search_type search_type;
+  const char *hexprefix;
 
   search_type=classify_ks_search(&searchkey);
 
@@ -406,7 +492,7 @@ search_key(const char *searchkey)
     fprintf(console,"gpgkeys: search type is %d, and key is \"%s\"\n",
 	    search_type,searchkey);
 
-  searchkey_encoded=curl_easy_escape(curl,(char *)searchkey,0);
+  searchkey_encoded=curl_escape((char *)searchkey,0);
   if(!searchkey_encoded)
     {
       fprintf(console,"gpgkeys: out of memory\n");
@@ -414,7 +500,23 @@ search_key(const char *searchkey)
       goto fail;
     }
 
-  request=xtrymalloc(MAX_URL+60+strlen(searchkey_encoded));
+  /* HKP keyservers like the 0x to be present when searching by
+     keyid.  */
+  hexprefix = (search_type==KS_SEARCH_KEYID_SHORT
+               || search_type==KS_SEARCH_KEYID_LONG)? "0x":"";
+
+  request = strconcat
+    (proto,
+     "://",
+     opt->host,
+     ":",
+     port,
+     opt->path,
+     appendable_path (opt->path, "/pks/lookup?op=index&options=mr&search="),
+     hexprefix,
+     searchkey_encoded,
+     opt->action == KS_GETNAME? "&exact=on":"",
+     NULL);
   if(!request)
     {
       fprintf(console,"gpgkeys: out of memory\n");
@@ -423,24 +525,6 @@ search_key(const char *searchkey)
     }
 
   fprintf(output,"SEARCH %s BEGIN\n",searchkey);
-
-  strcpy(request,proto);
-  strcat(request,"://");
-  strcat(request,opt->host);
-  strcat(request,":");
-  strcat(request,port);
-  strcat(request,opt->path);
-  append_path(request,"/pks/lookup?op=index&options=mr&search=");
-
-  /* HKP keyservers like the 0x to be present when searching by
-     keyid */
-  if(search_type==KS_SEARCH_KEYID_SHORT || search_type==KS_SEARCH_KEYID_LONG)
-    strcat(request,"0x");
-
-  strcat(request,searchkey_encoded);
-
-  if(search_type!=KS_SEARCH_SUBSTR)
-    strcat(request,"&exact=on");
 
   if(opt->verbose>2)
     fprintf(console,"gpgkeys: HTTP URL is `%s'\n",request);
@@ -462,9 +546,8 @@ search_key(const char *searchkey)
     }
 
  fail:
-
   curl_free(searchkey_encoded);
-  free(request);
+  xfree (request);
 
   if(ret!=KEYSERVER_OK)
     fprintf(output,"\nSEARCH %s FAILED %d\n",searchkey,ret);
@@ -496,16 +579,27 @@ fail_all(struct keylist *keylist,int err)
       }
 }
 
-#ifdef HAVE_LIBCURL
+#if defined(HAVE_LIBCURL) && defined(USE_DNS_SRV)
 /* If there is a SRV record, take the highest ranked possibility.
-   This is a hack, as we don't proceed downwards. */
+   This is a hack, as we don't proceed downwards if we can't
+   connect(), but only if we can't getaddinfo().  All this should
+   ideally be replaced by actual SRV support in libcurl someday! */
+
+#define HOST_HEADER "Host:"
+
 static void
-srv_replace(const char *srvtag)
+srv_replace(const char *srvtag,
+	    struct curl_slist **headers,struct curl_slist **resolve)
 {
-#ifdef USE_DNS_SRV
   struct srventry *srvlist=NULL;
+  int srvcount, srvindex;
+  char *portstr;
 
   if(!srvtag)
+    return;
+
+  portstr=malloc (MAX_PORT);
+  if(!portstr)
     return;
 
   if(1+strlen(srvtag)+6+strlen(opt->host)+1<=MAXDNAME)
@@ -516,30 +610,79 @@ srv_replace(const char *srvtag)
       strcat(srvname,srvtag);
       strcat(srvname,"._tcp.");
       strcat(srvname,opt->host);
-      getsrv(srvname,&srvlist);
+      srvcount=getsrv(srvname,&srvlist);
     }
+  else
+    srvcount = 0;
 
-  if(srvlist)
+  for(srvindex=0 ; srvindex<srvcount && portstr ; srvindex++)
     {
-      char *newname,*newport;
+      struct addrinfo hints, *res;
 
-      newname=strdup(srvlist->target);
-      newport=xtrymalloc(MAX_PORT);
-      if(newname && newport)
+      sprintf (portstr, "%hu", srvlist[srvindex].port);
+      memset (&hints, 0, sizeof (hints));
+      hints.ai_socktype = SOCK_STREAM;
+
+      if (getaddrinfo (srvlist[srvindex].target, portstr, &hints, &res) == 0)
 	{
-	  free(opt->host);
-	  free(opt->port);
-	  opt->host=newname;
-	  snprintf(newport,MAX_PORT,"%u",srvlist->port);
-	  opt->port=newport;
+	  /* Very safe */
+	  char ipaddr[INET_ADDRSTRLEN+INET6_ADDRSTRLEN];
+
+	  if((res->ai_family==AF_INET
+	      && inet_ntop (res->ai_family,
+			    &((struct sockaddr_in *)res->ai_addr)->sin_addr,
+			    ipaddr,sizeof(ipaddr)))
+	     || (res->ai_family==AF_INET6
+		 && inet_ntop (res->ai_family,
+			       &((struct sockaddr_in6 *)res->ai_addr)->sin6_addr,
+			       ipaddr,sizeof(ipaddr))))
+	    {
+	      char *entry,*host;
+
+	      entry=malloc (strlen(opt->host)+1
+			    +strlen(portstr)+1+strlen(ipaddr)+1);
+
+	      host=malloc (strlen(HOST_HEADER)+1+strlen(opt->host)+1);
+
+	      if(entry && host)
+		{
+		  sprintf (entry, "%s:%s:%s", opt->host, portstr, ipaddr);
+		  sprintf (host, "%s %s", HOST_HEADER, opt->host);
+
+		  *resolve=curl_slist_append (*resolve,entry);
+		  *headers=curl_slist_append (*headers,host);
+
+		  if(*resolve && *headers)
+		    {
+		      if(curl_easy_setopt (curl,
+					   CURLOPT_RESOLVE,*resolve)==CURLE_OK)
+			{
+			  if(opt->debug)
+			    fprintf (console, "gpgkeys: Faking %s SRV from"
+				     " %s to %s:%u\n",
+				     srvtag, opt->host,
+				     srvlist[srvindex].target,
+				     srvlist[srvindex].port);
+
+			  free (opt->port);
+			  opt->port=portstr;
+			  portstr=NULL;
+			}
+		    }
+		}
+
+	      free (entry);
+	      free (host);
+	    }
+
+	  freeaddrinfo (res);
 	}
       else
-	{
-	  free(newname);
-	  free(newport);
-	}
+	continue; /* Not found */
     }
-#endif
+
+  free (srvlist);
+  free (portstr);
 }
 #endif
 
@@ -555,12 +698,19 @@ show_help (FILE *fp)
 int
 main(int argc,char *argv[])
 {
-  int arg,ret=KEYSERVER_INTERNAL_ERROR,try_srv=1;
+  int arg,ret=KEYSERVER_INTERNAL_ERROR;
   char line[MAX_LINE];
   int failed=0;
   struct keylist *keylist=NULL,*keyptr=NULL;
   char *proxy=NULL;
-  struct curl_slist *headers=NULL;
+  struct curl_slist *headers=NULL,*resolve=NULL;
+
+  /* Only default this to on if we have SRV support */
+#ifdef USE_DNS_SRV
+  int try_srv = 1;
+#else
+  int try_srv = 0;
+#endif
 
   console=stderr;
 
@@ -648,13 +798,13 @@ main(int argc,char *argv[])
 
 	  option[MAX_OPTION]='\0';
 
-	  if(ascii_strncasecmp(option,"no-",3)==0)
+	  if(strncasecmp(option,"no-",3)==0)
 	    {
 	      no=1;
 	      start=&option[3];
 	    }
 
-	  if(ascii_strncasecmp(start,"http-proxy",10)==0)
+	  if(strncasecmp(start,"http-proxy",10)==0)
 	    {
 	      if(no)
 		{
@@ -670,7 +820,7 @@ main(int argc,char *argv[])
 		    }
 		}
 	    }
-	  else if(ascii_strcasecmp(start,"try-dns-srv")==0)
+	  else if(strcasecmp(start,"try-dns-srv")==0)
 	    {
 	      if(no)
 		try_srv=0;
@@ -682,7 +832,6 @@ main(int argc,char *argv[])
 	}
     }
 
-
   if(!opt->scheme)
     {
       fprintf(console,"gpgkeys: no scheme supplied!\n");
@@ -690,7 +839,8 @@ main(int argc,char *argv[])
       goto fail;
     }
 
-  if(ascii_strcasecmp(opt->scheme,"hkps")==0)
+  /* Defaults */
+  if(ks_strcasecmp(opt->scheme,"hkps")==0)
     {
       proto="https";
       port="443";
@@ -722,17 +872,22 @@ main(int argc,char *argv[])
       goto fail;
     }
 
-  /* If the user gives a :port, then disable SRV.  The semantics of a
-     specified port and SRV do not play well together. */
-  if(opt->port)
-    port=opt->port;
-  else if(try_srv)
+  if(opt->debug)
+    {
+      fprintf(console,"gpgkeys: curl version = %s\n",curl_version());
+      curl_easy_setopt(curl,CURLOPT_STDERR,console);
+      curl_easy_setopt(curl,CURLOPT_VERBOSE,1L);
+    }
+
+  /* Only use SRV if the user does not provide a :port.  The semantics
+     of a specified port and SRV do not play well together. */
+  if(!opt->port && try_srv)
     {
       char *srvtag;
 
-      if(ascii_strcasecmp(opt->scheme,"hkp")==0)
+      if(ks_strcasecmp(opt->scheme,"hkp")==0)
 	srvtag="pgpkey-http";
-      else if(ascii_strcasecmp(opt->scheme,"hkps")==0)
+      else if(ks_strcasecmp(opt->scheme,"hkps")==0)
 	srvtag="pgpkey-https";
       else
 	srvtag=NULL;
@@ -742,8 +897,12 @@ main(int argc,char *argv[])
 	 This isn't as good as true SRV support, as we do not try all
 	 possible targets at one particular level and work our way
 	 down the list, but it's better than nothing. */
-      srv_replace(srvtag);
+#ifdef USE_DNS_SRV
+      srv_replace(srvtag,&headers,&resolve);
 #else
+      fprintf(console,"gpgkeys: try-dns-srv was requested, but not SRV capable\n");
+#endif
+#else /* !HAVE_LIBCURL */
       /* We're using our internal curl shim, so we can use its (true)
 	 SRV support.  Obviously, CURLOPT_SRVTAG_GPG_HACK isn't a real
 	 libcurl option.  It's specific to our shim. */
@@ -751,17 +910,15 @@ main(int argc,char *argv[])
 #endif
     }
 
+  /* If the user provided a port (or it came in via SRV, above),
+     replace the default. */
+  if(opt->port)
+    port=opt->port;
+
   curl_easy_setopt(curl,CURLOPT_ERRORBUFFER,errorbuffer);
 
   if(opt->auth)
     curl_easy_setopt(curl,CURLOPT_USERPWD,opt->auth);
-
-  if(opt->debug)
-    {
-      fprintf(console,"gpgkeys: curl version = %s\n",curl_version());
-      curl_easy_setopt(curl,CURLOPT_STDERR,console);
-      curl_easy_setopt(curl,CURLOPT_VERBOSE,1L);
-    }
 
   curl_easy_setopt(curl,CURLOPT_SSL_VERIFYPEER,(long)opt->flags.check_cert);
   curl_easy_setopt(curl,CURLOPT_CAINFO,opt->ca_cert_file);
@@ -808,7 +965,7 @@ main(int argc,char *argv[])
 	      if(line[0]=='\n' || line[0]=='\0')
 		break;
 
-	      work=xtrymalloc(sizeof(struct keylist));
+	      work=malloc(sizeof(struct keylist));
 	      if(work==NULL)
 		{
 		  fprintf(console,"gpgkeys: out of memory while "
@@ -844,7 +1001,7 @@ main(int argc,char *argv[])
   /* Send the response */
 
   fprintf(output,"VERSION %d\n",KEYSERVER_PROTO_VERSION);
-  fprintf(output,"PROGRAM %s %s\n\n",VERSION,curl_version());
+  fprintf(output,"PROGRAM %s\n\n",VERSION);
 
   if(opt->verbose>1)
     {
@@ -886,16 +1043,16 @@ main(int argc,char *argv[])
     }
   else if(opt->action==KS_SEND)
     {
-      int eof=0;
+      int myeof=0;
 
       do
 	{
 	  set_timeout(opt->timeout);
 
-	  if(send_key(&eof)!=KEYSERVER_OK)
+	  if(send_key(&myeof)!=KEYSERVER_OK)
 	    failed++;
 	}
-      while(!eof);
+      while(!myeof);
     }
   else if(opt->action==KS_SEARCH)
     {
@@ -914,7 +1071,7 @@ main(int argc,char *argv[])
 	  keyptr=keyptr->next;
 	}
 
-      searchkey=xtrymalloc(len+1);
+      searchkey=malloc(len+1);
       if(searchkey==NULL)
 	{
 	  ret=KEYSERVER_NO_MEMORY;
@@ -964,6 +1121,7 @@ main(int argc,char *argv[])
   free_ks_options(opt);
 
   curl_slist_free_all(headers);
+  curl_slist_free_all(resolve);
 
   if(curl)
     curl_easy_cleanup(curl);

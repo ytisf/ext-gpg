@@ -1,5 +1,5 @@
 /* ksutil.c - general keyserver utility functions
- * Copyright (C) 2004, 2005, 2006, 2007 Free Software Foundation, Inc.
+ * Copyright (C) 2004, 2005, 2006 Free Software Foundation, Inc.
  *
  * This file is part of GnuPG.
  *
@@ -35,12 +35,19 @@
 #include <string.h>
 #include <stdlib.h>
 
+#ifdef HAVE_W32_SYSTEM
+# ifdef HAVE_WINSOCK2_H
+#  include <winsock2.h>
+# endif
+# include <windows.h>
+#endif
+
 #ifdef HAVE_LIBCURL
 #include <curl/curl.h>
 #else
 #include "curl-shim.h"
 #endif
-#include "compat.h"
+#include "util.h"
 #include "keyserver.h"
 #include "ksutil.h"
 
@@ -74,7 +81,7 @@ register_timeout(void)
   sigemptyset(&act.sa_mask);
   act.sa_flags=0;
   return sigaction(SIGALRM,&act,NULL);
-#else 
+#else
   if(signal(SIGALRM,catch_alarm)==SIG_ERR)
     return -1;
   else
@@ -83,6 +90,22 @@ register_timeout(void)
 }
 
 #endif /* !HAVE_DOSISH_SYSTEM */
+
+#ifdef HAVE_W32_SYSTEM
+void
+w32_init_sockets (void)
+{
+  static int initialized;
+  static WSADATA wsdata;
+
+  if (!initialized)
+    {
+      WSAStartup (0x0202, &wsdata);
+      initialized = 1;
+    }
+}
+#endif /*HAVE_W32_SYSTEM*/
+
 
 struct ks_options *
 init_ks_options(void)
@@ -148,13 +171,13 @@ parse_ks_options(char *line,struct ks_options *opt)
     {
       command[MAX_COMMAND]='\0';
 
-      if(ascii_strcasecmp(command,"get")==0)
+      if(strcasecmp(command,"get")==0)
 	opt->action=KS_GET;
-      else if(ascii_strcasecmp(command,"getname")==0)
+      else if(strcasecmp(command,"getname")==0)
 	opt->action=KS_GETNAME;
-      else if(ascii_strcasecmp(command,"send")==0)
+      else if(strcasecmp(command,"send")==0)
 	opt->action=KS_SEND;
-      else if(ascii_strcasecmp(command,"search")==0)
+      else if(strcasecmp(command,"search")==0)
 	opt->action=KS_SEARCH;
 
       return 0;
@@ -235,13 +258,13 @@ parse_ks_options(char *line,struct ks_options *opt)
 
       option[MAX_OPTION]='\0';
 
-      if(ascii_strncasecmp(option,"no-",3)==0)
+      if(strncasecmp(option,"no-",3)==0)
 	{
 	  no=1;
 	  start=&option[3];
 	}
 
-      if(ascii_strncasecmp(start,"verbose",7)==0)
+      if(strncasecmp(start,"verbose",7)==0)
 	{
 	  if(no)
 	    opt->verbose=0;
@@ -250,35 +273,35 @@ parse_ks_options(char *line,struct ks_options *opt)
 	  else
 	    opt->verbose++;
 	}
-      else if(ascii_strcasecmp(start,"include-disabled")==0)
+      else if(strcasecmp(start,"include-disabled")==0)
 	{
 	  if(no)
 	    opt->flags.include_disabled=0;
 	  else
 	    opt->flags.include_disabled=1;
 	}
-      else if(ascii_strcasecmp(start,"include-revoked")==0)
+      else if(strcasecmp(start,"include-revoked")==0)
 	{
 	  if(no)
 	    opt->flags.include_revoked=0;
 	  else
 	    opt->flags.include_revoked=1;
 	}
-      else if(ascii_strcasecmp(start,"include-subkeys")==0)
+      else if(strcasecmp(start,"include-subkeys")==0)
 	{
 	  if(no)
 	    opt->flags.include_subkeys=0;
 	  else
 	    opt->flags.include_subkeys=1;
 	}
-      else if(ascii_strcasecmp(start,"check-cert")==0)
+      else if(strcasecmp(start,"check-cert")==0)
 	{
 	  if(no)
 	    opt->flags.check_cert=0;
 	  else
 	    opt->flags.check_cert=1;
 	}
-      else if(ascii_strncasecmp(start,"debug",5)==0)
+      else if(strncasecmp(start,"debug",5)==0)
 	{
 	  if(no)
 	    opt->debug=0;
@@ -287,7 +310,7 @@ parse_ks_options(char *line,struct ks_options *opt)
 	  else if(start[5]=='\0')
 	    opt->debug=1;
 	}
-      else if(ascii_strncasecmp(start,"timeout",7)==0)
+      else if(strncasecmp(start,"timeout",7)==0)
 	{
 	  if(no)
 	    opt->timeout=0;
@@ -296,7 +319,7 @@ parse_ks_options(char *line,struct ks_options *opt)
 	  else if(start[7]=='\0')
 	    opt->timeout=DEFAULT_KEYSERVER_TIMEOUT;
 	}
-      else if(ascii_strncasecmp(start,"ca-cert-file",12)==0)
+      else if(strncasecmp(start,"ca-cert-file",12)==0)
 	{
 	  if(no)
 	    {
@@ -306,7 +329,7 @@ parse_ks_options(char *line,struct ks_options *opt)
 	  else if(start[12]=='=')
 	    {
 	      free(opt->ca_cert_file);
-	      opt->ca_cert_file=strdup(&start[13]);
+	      opt->ca_cert_file = make_filename_try (start+13, NULL);
 	      if(!opt->ca_cert_file)
 		return KEYSERVER_NO_MEMORY;
 	    }
@@ -349,10 +372,6 @@ print_nocr(FILE *stream,const char *str)
     }
 }
 
-#define HEX "abcdefABCDEF1234567890"
-
-/* Return what sort of item is being searched for.  *search is
-   permuted to remove any special indicators of a search type. */
 enum ks_search_type
 classify_ks_search(const char **search)
 {
@@ -373,12 +392,14 @@ classify_ks_search(const char **search)
     case '0':
       if((*search)[1]=='x')
 	{
-	  if(strlen(*search)==10 && strspn(*search,HEX"x")==10)
+	  if(strlen(*search)==10
+	     && strspn(*search,"abcdefABCDEF1234567890x")==10)
 	    {
 	      (*search)+=2;
 	      return KS_SEARCH_KEYID_SHORT;
 	    }
-	  else if(strlen(*search)==18 && strspn(*search,HEX"x")==18)
+	  else if(strlen(*search)==18
+		  && strspn(*search,"abcdefABCDEF1234567890x")==18)
 	    {
 	      (*search)+=2;
 	      return KS_SEARCH_KEYID_LONG;
@@ -386,17 +407,6 @@ classify_ks_search(const char **search)
 	}
       /* fall through */
     default:
-      /* Try and recognize a key ID.  This isn't exact (it's possible
-	 that a user ID string happens to be 8 or 16 digits of hex),
-	 but it's extremely unlikely.  Plus the main GPG program does
-	 this also, and consistency is good. */
-
-      if(strlen(*search)==8 && strspn(*search,HEX)==8)
-	return KS_SEARCH_KEYID_SHORT;
-      else if(strlen(*search)==16 && strspn(*search,HEX)==16)
-	return KS_SEARCH_KEYID_LONG;
-
-      /* Last resort */
       return KS_SEARCH_SUBSTR;
     }
 }
@@ -560,4 +570,56 @@ curl_writer_finalize(struct curl_writer_ctx *ctx)
       fprintf(ctx->stream,"\n"END);
       ctx->flags.done=1;
     }
+}
+
+
+int
+ks_hextobyte (const char *s)
+{
+  int c;
+
+  if ( *s >= '0' && *s <= '9' )
+    c = 16 * (*s - '0');
+  else if ( *s >= 'A' && *s <= 'F' )
+    c = 16 * (10 + *s - 'A');
+  else if ( *s >= 'a' && *s <= 'f' )
+    c = 16 * (10 + *s - 'a');
+  else
+    return -1;
+  s++;
+  if ( *s >= '0' && *s <= '9' )
+    c += *s - '0';
+  else if ( *s >= 'A' && *s <= 'F' )
+    c += 10 + *s - 'A';
+  else if ( *s >= 'a' && *s <= 'f' )
+    c += 10 + *s - 'a';
+  else
+    return -1;
+  return c;
+}
+
+
+/* Non localized version of toupper.  */
+int
+ks_toupper (int c)
+{
+  if (c >= 'a' && c <= 'z')
+    c &= ~0x20;
+  return c;
+}
+
+
+/* Non localized version of strcasecmp.  */
+int
+ks_strcasecmp (const char *a, const char *b)
+{
+  if (a == b)
+    return 0;
+
+  for (; *a && *b; a++, b++)
+    {
+      if (*a != *b && ks_toupper (*a) != ks_toupper (*b))
+        break;
+    }
+  return *a == *b? 0 : (ks_toupper (*a) - ks_toupper (*b));
 }

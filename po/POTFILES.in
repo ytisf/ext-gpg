@@ -1,17 +1,31 @@
-# List of source files containing translatable strings for GnuPG
-# Copyright (c) 1998, 2003, 2004 Free Software Foundation, Inc.
+# List of files with translatable strings
 
-cipher/cast5.c
-cipher/md.c
-cipher/primegen.c
-cipher/random.c
-cipher/rndegd.c
-cipher/rndlinux.c
+agent/call-pinentry.c
+agent/command-ssh.c
+agent/divert-scd.c
+agent/genkey.c
+agent/gpg-agent.c
+agent/preset-passphrase.c
+agent/protect-tool.c
+agent/trustlist.c
+agent/findkey.c
+agent/call-pinentry.c
 
-g10/app-openpgp.c
+common/exechelp.c
+common/http.c
+common/simple-pwquery.c
+common/sysutils.c
+common/yesno.c
+common/miscellaneous.c
+common/asshelp.c
+common/audit.c
+common/helpfile.c
+common/gettime.c
+
 g10/armor.c
+g10/build-packet.c
+g10/call-agent.c
 g10/card-util.c
-g10/cardglue.c
 g10/dearmor.c
 g10/decrypt.c
 g10/delkey.c
@@ -19,8 +33,8 @@ g10/encode.c
 g10/encr-data.c
 g10/exec.c
 g10/export.c
-g10/gpg.c
 g10/getkey.c
+g10/gpg.c
 g10/gpgv.c
 g10/helptext.c
 g10/import.c
@@ -52,9 +66,44 @@ g10/textfilter.c
 g10/trustdb.c
 g10/verify.c
 
-util/argparse.c
-util/errors.c
-util/logger.c
-util/miscutil.c
-util/secmem.c
+jnlib/argparse.c
+jnlib/logging.c
+jnlib/utf8conv.c
+jnlib/dotlock.c
+
+kbx/kbxutil.c
+
+scd/app-nks.c
+scd/app-openpgp.c
+scd/app-dinsig.c
+scd/scdaemon.c
+
+sm/base64.c
+sm/call-agent.c
+sm/call-dirmngr.c
+sm/certchain.c
+sm/certcheck.c
+sm/certdump.c
+sm/certlist.c
+sm/certreqgen.c
+sm/certreqgen-ui.c
+sm/decrypt.c
+sm/delete.c
+sm/encrypt.c
+sm/export.c
+sm/gpgsm.c
+sm/import.c
+sm/keydb.c
+sm/keylist.c
+sm/misc.c
+sm/qualified.c
+sm/sign.c
+sm/verify.c
+
+tools/gpg-connect-agent.c
+tools/gpgconf-comp.c
+tools/gpgconf.c
+tools/no-libgcrypt.c
+tools/symcryptrun.c
+tools/gpg-check-pattern.c
 

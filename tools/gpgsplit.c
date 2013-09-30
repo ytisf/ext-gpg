@@ -17,10 +17,6 @@
  * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
-/* 
- * TODO: Add an option to uncompress packets.  This should come quite handy.
- */
-
 #include <config.h>
 #include <errno.h>
 #include <stdio.h>
@@ -29,6 +25,7 @@
 #include <ctype.h>
 #include <unistd.h>
 #include <assert.h>
+#include <sys/types.h>
 #ifdef HAVE_DOSISH_SYSTEM
 # include <fcntl.h> /* for setmode() */
 #endif
@@ -41,8 +38,8 @@
 #endif
 
 #define INCLUDED_BY_MAIN_MODULE 1
-#include "../g10/packet.h"
 #include "util.h"
+#include "openpgpdefs.h"
 
 static int opt_verbose;
 static const char *opt_prefix = "";
@@ -78,8 +75,8 @@ static ARGPARSE_OPTS opts[] = {
 {0} };
 
 
-const char *
-strusage( int level )
+static const char *
+my_strusage (int level)
 {
   const char *p;
   switch (level)
@@ -88,9 +85,8 @@ strusage( int level )
       break;
     case 13: p = VERSION; break;
     case 17: p = PRINTABLE_OS_NAME; break;
-    case 19: p =
-               "Please report bugs to <bug-gnupg@gnu.org>.\n";
-    break;
+    case 19: p = "Please report bugs to <@EMAIL@>.\n"; break;
+
     case 1:
     case 40:	p =
                   "Usage: gpgsplit [options] [files] (-h for help)";
@@ -100,7 +96,7 @@ strusage( int level )
                   "Split an OpenPGP message into packets\n";
     break;
     
-    default:	p = default_strusage(level);
+    default:	p = NULL;
     }
   return p;
 }
@@ -108,7 +104,7 @@ strusage( int level )
 
 
 int
-main( int argc, char **argv )
+main (int argc, char **argv)
 {
   ARGPARSE_ARGS pargs;
 
@@ -116,7 +112,8 @@ main( int argc, char **argv )
   setmode( fileno(stdin), O_BINARY );
   setmode( fileno(stdout), O_BINARY );
 #endif
-  log_set_name("gpgsplit");
+  log_set_prefix ("gpgsplit", JNLIB_LOG_WITH_PREFIX);
+  set_strusage (my_strusage);
   
   pargs.argc = &argc;
   pargs.argv = &argv;
@@ -442,6 +439,15 @@ handle_zlib(int algo,FILE *fpin,FILE *fpout)
 	}
     } 
   while (zrc != Z_STREAM_END && zrc != Z_BUF_ERROR);
+  {
+    int i;
+    
+    fputs ("Left over bytes:", stderr);
+    for (i=0; i < zs.avail_in; i++)
+      fprintf (stderr, " %02X", zs.next_in[i]);
+    putc ('\n', stderr);
+
+  }
   inflateEnd (&zs);
 
   return 0;
@@ -519,8 +525,8 @@ handle_bzip2(int algo,FILE *fpin,FILE *fpout)
 
 /* hdr must point to a buffer large enough to hold all header bytes */
 static int
-write_part ( const char *fname, FILE *fpin, unsigned long pktlen,
-             int pkttype, int partial, unsigned char *hdr, size_t hdrlen)
+write_part (FILE *fpin, unsigned long pktlen,
+            int pkttype, int partial, unsigned char *hdr, size_t hdrlen)
 {
   FILE *fpout;
   int c, first;
@@ -763,7 +769,7 @@ write_part ( const char *fname, FILE *fpin, unsigned long pktlen,
 
 
 static int
-do_split (const char *fname, FILE *fp)
+do_split (FILE *fp)
 {
   int c, ctb, pkttype;
   unsigned long pktlen = 0;
@@ -841,8 +847,7 @@ do_split (const char *fname, FILE *fp)
 	}
     }
 
-  return write_part (fname, fp, pktlen, pkttype, partial,
-                     header, header_idx);
+  return write_part (fp, pktlen, pkttype, partial, header, header_idx);
 }
 
 
@@ -863,7 +868,7 @@ split_packets (const char *fname)
       return;
     }
   
-  while ( !(rc = do_split (fname, fp)) )
+  while ( !(rc = do_split (fp)) )
     ;
   if ( rc > 0 )
     ; /* error already handled */

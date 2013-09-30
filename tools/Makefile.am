@@ -1,5 +1,5 @@
-# Copyright (C) 1998, 1999, 2000, 2001, 2003,
-#               2004  Free Software Foundation, Inc.
+# Makefile.am - Tools directory
+#     	Copyright (C) 2003, 2007 Free Software Foundation, Inc.
 #
 # This file is part of GnuPG.
 #
@@ -7,41 +7,121 @@
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation; either version 3 of the License, or
 # (at your option) any later version.
-# 
+#
 # GnuPG is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
-# 
+#
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, see <http://www.gnu.org/licenses/>.
-## Process this file with automake to produce Makefile.in
 
-EXTRA_DIST = lspgpot ring-a-party mail-signed-keys convert-from-106
+EXTRA_DIST = \
+	Manifest watchgnupg.c ChangeLog-2011 \
+	addgnupghome applygnupgdefaults gpgsm-gencert.sh \
+	lspgpot mail-signed-keys convert-from-106 sockprox.c \
+	ccidmon.c gpg-connect-agent-w32info.rc
 
-AM_CPPFLAGS = -I$(top_srcdir)/include -I$(top_srcdir)/intl
 
-if ! HAVE_DOSISH_SYSTEM
-AM_CPPFLAGS += -DLOCALEDIR="\"$(localedir)\""
+AM_CPPFLAGS = -I$(top_srcdir)/gl -I$(top_srcdir)/intl -I$(top_srcdir)/common
+include $(top_srcdir)/am/cmacros.am
+
+if HAVE_W32_SYSTEM
+resource_objs += gpg-connect-agent-w32info.o
 endif
 
-needed_libs = ../cipher/libcipher.a ../mpi/libmpi.a ../util/libutil.a 
-other_libs = $(LIBICONV) $(LIBINTL) $(CAPLIBS)
+AM_CFLAGS = $(LIBGCRYPT_CFLAGS) $(GPG_ERROR_CFLAGS) $(LIBASSUAN_CFLAGS)
 
-bin_PROGRAMS    = gpgsplit
-noinst_PROGRAMS = mpicalc bftest clean-sat mk-tdata shmtest make-dns-cert
+sbin_SCRIPTS = addgnupghome applygnupgdefaults
 
+bin_SCRIPTS = gpgsm-gencert.sh
 if HAVE_USTAR
-bin_SCRIPTS = gpg-zip
+# bin_SCRIPTS += gpg-zip
+noinst_SCRIPTS = gpg-zip
 endif
 
-if HAVE_SHM
-noinst_PROGRAMS += shmtest
+if BUILD_SYMCRYPTRUN
+  symcryptrun = symcryptrun
+else
+  symcryptrun =
 endif
 
-gpgsplit_LDADD  = $(needed_libs) $(other_libs) @ZLIBS@
-mpicalc_LDADD   = $(needed_libs) $(other_libs) @W32LIBS@
-bftest_LDADD    = $(needed_libs) $(other_libs) @W32LIBS@ @DLLIBS@ @NETLIBS@ @LIBREADLINE@
-shmtest_LDADD   = $(needed_libs) $(other_libs) @LIBREADLINE@
+if BUILD_GPGTAR
+  gpgtar = gpgtar
+else
+  gpgtar =
+endif
 
-gpgsplit mpicalc bftest shmtest: $(needed_libs)
+
+bin_PROGRAMS = gpgconf gpg-connect-agent gpgkey2ssh ${symcryptrun} ${gpgtar}
+if !HAVE_W32_SYSTEM
+bin_PROGRAMS += watchgnupg gpgparsemail
+endif
+
+if !DISABLE_REGEX
+libexec_PROGRAMS = gpg-check-pattern
+endif
+
+noinst_PROGRAMS = clean-sat mk-tdata make-dns-cert gpgsplit
+
+common_libs = $(libcommon) ../jnlib/libjnlib.a ../gl/libgnu.a
+pwquery_libs = ../common/libsimple-pwquery.a
+
+gpgsplit_LDADD = $(common_libs) \
+	         $(LIBGCRYPT_LIBS) $(GPG_ERROR_LIBS) \
+		 $(ZLIBS) $(LIBINTL) $(LIBICONV)
+
+gpgconf_SOURCES = gpgconf.c gpgconf.h gpgconf-comp.c no-libgcrypt.c
+
+# jnlib/common sucks in gpg-error, will they, nil they (some compilers
+# do not eliminate the supposed-to-be-unused-inline-functions).
+gpgconf_LDADD = $(common_libs) \
+                $(LIBINTL) $(GPG_ERROR_LIBS) $(LIBICONV) $(W32SOCKLIBS)
+
+gpgparsemail_SOURCES = gpgparsemail.c rfc822parse.c rfc822parse.h
+gpgparsemail_LDADD =
+
+symcryptrun_SOURCES = symcryptrun.c
+symcryptrun_LDADD = $(LIBUTIL_LIBS) $(common_libs) $(pwquery_libs) \
+                    $(LIBGCRYPT_LIBS) $(GPG_ERROR_LIBS) $(LIBINTL) \
+                    $(LIBICONV) $(W32SOCKLIBS)
+
+watchgnupg_SOURCES = watchgnupg.c
+watchgnupg_LDADD = $(NETLIBS)
+
+gpg_connect_agent_SOURCES = gpg-connect-agent.c no-libgcrypt.c
+# FIXME: remove PTH_LIBS (why do we need them at all?)
+gpg_connect_agent_LDADD = ../common/libgpgrl.a $(common_libs) \
+	                  $(LIBASSUAN_LIBS) $(PTH_LIBS) $(GPG_ERROR_LIBS) \
+                          $(LIBREADLINE) $(LIBINTL) $(NETLIBS) $(LIBICONV) \
+	                  $(resource_objs)
+
+gpgkey2ssh_SOURCES = gpgkey2ssh.c
+gpgkey2ssh_CFLAGS = $(LIBGCRYPT_CFLAGS) $(GPG_ERROR_CFLAGS)
+# common sucks in jnlib, via use of BUG() in an inline function, which
+# some compilers do not eliminate.
+gpgkey2ssh_LDADD = $(common_libs) \
+                   $(LIBGCRYPT_LIBS) $(GPG_ERROR_LIBS) $(LIBINTL) $(LIBICONV)
+
+
+if !DISABLE_REGEX
+gpg_check_pattern_SOURCES = gpg-check-pattern.c
+gpg_check_pattern_CFLAGS = $(LIBGCRYPT_CFLAGS) $(GPG_ERROR_CFLAGS)
+gpg_check_pattern_LDADD = $(common_libs) $(LIBGCRYPT_LIBS) $(GPG_ERROR_LIBS) \
+                          $(LIBINTL) $(LIBICONV) $(W32SOCKLIBS)
+endif
+
+gpgtar_SOURCES = \
+	gpgtar.c gpgtar.h \
+	gpgtar-create.c \
+	gpgtar-extract.c \
+	gpgtar-list.c \
+	no-libgcrypt.c
+gpgtar_CFLAGS = $(GPG_ERROR_CFLAGS) $(PTH_CFLAGS)
+gpgtar_LDADD = $(common_libs) $(GPG_ERROR_LIBS) \
+               $(NETLIBS) $(LIBICONV) $(W32SOCKLIBS)
+
+# Make sure that all libs are build before we use them.  This is
+# important for things like make -j2.
+$(PROGRAMS): $(common_libs) $(pwquery_libs) ../common/libgpgrl.a
+

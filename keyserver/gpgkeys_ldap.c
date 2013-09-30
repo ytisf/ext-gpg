@@ -1,6 +1,6 @@
 /* gpgkeys_ldap.c - talk to a LDAP keyserver
- * Copyright (C) 2001, 2002, 2004, 2005, 2006,
- *               2007 Free Software Foundation, Inc.
+ * Copyright (C) 2001, 2002, 2004, 2005, 2006
+ *               2007  Free Software Foundation, Inc.
  *
  * This file is part of GnuPG.
  *
@@ -53,18 +53,14 @@
 #include <ldap.h>
 #endif
 
-/* For mozldap */
-#ifdef HAVE_LDAP_SSL_H
-#include <ldap_ssl.h>
-#endif
-
-#include "compat.h"
+#include "util.h"
 #include "keyserver.h"
 #include "ksutil.h"
 
 #ifdef __riscos__
 #include "util.h"
 #endif
+
 
 #if HAVE_W32_SYSTEM
 # if !defined(__MINGW64_VERSION_MAJOR) || !defined(__MINGW32_MAJOR_VERSION)
@@ -73,7 +69,7 @@
 #  define my_ldap_start_tls_s(a,b,c) ldap_start_tls_sA ((a),(b),(c))
 # else
    /* Standard Microsoft or mingw64.  */
-#  define my_ldap_start_tls_s(a,b,c) ldap_start_tls_sA ((a),NULL, NULL,(b),(c))
+#  define my_ldap_start_tls_s(a,b,c) ldap_start_tls_sA ((a),NULL,NULL,(b),(c))
 # endif
 #else /*!W32*/
 # define my_ldap_start_tls_s(a,b,c) ldap_start_tls_s ((a),(b),(c))
@@ -149,7 +145,7 @@ key_in_keylist(const char *key,struct keylist *list)
 
   while(keyptr!=NULL)
     {
-      if(ascii_strcasecmp(key,keyptr->str)==0)
+      if(strcasecmp(key,keyptr->str)==0)
 	return 1;
 
       keyptr=keyptr->next;
@@ -161,7 +157,7 @@ key_in_keylist(const char *key,struct keylist *list)
 static int
 add_key_to_keylist(const char *key,struct keylist **list)
 {
-  struct keylist *keyptr=xtrymalloc(sizeof(struct keylist));
+  struct keylist *keyptr=malloc(sizeof(struct keylist));
 
   if(keyptr==NULL)
     {
@@ -288,7 +284,7 @@ make_one_attr(LDAPMod ***modlist,char *attr,const char *value)
   /* Search modlist for the attribute we're playing with. */
   for(m=*modlist;*m;m++)
     {
-      if(ascii_strcasecmp((*m)->mod_type,attr)==0)
+      if(strcasecmp((*m)->mod_type,attr)==0)
 	{
 	  char **ptr=(*m)->mod_values;
 	  int numvalues=0;
@@ -334,14 +330,14 @@ make_one_attr(LDAPMod ***modlist,char *attr,const char *value)
 	return 0;
 
       *modlist=grow;
-      grow[nummods]=xtrymalloc(sizeof(LDAPMod));
+      grow[nummods]=malloc(sizeof(LDAPMod));
       if(!grow[nummods])
 	return 0;
       grow[nummods]->mod_op=LDAP_MOD_REPLACE;
       grow[nummods]->mod_type=attr;
       if(value)
 	{
-	  grow[nummods]->mod_values=xtrymalloc(sizeof(char *)*2);
+	  grow[nummods]->mod_values=malloc(sizeof(char *)*2);
 	  if(!grow[nummods]->mod_values)
 	    {
 	      grow[nummods]=NULL;
@@ -385,7 +381,7 @@ build_attrs(LDAPMod ***modlist,char *line)
   if((record=strsep(&line,":"))==NULL)
     return;
 
-  if (strcmp("pub",record)==0)
+  if(ks_strcasecmp("pub",record)==0)
     {
       char *tok;
       int disabled=0,revoked=0;
@@ -474,7 +470,7 @@ build_attrs(LDAPMod ***modlist,char *line)
 	  case 'R':
 	    revoked=1;
 	    break;
-
+	    
 	  case 'd':
 	  case 'D':
 	    disabled=1;
@@ -491,7 +487,7 @@ build_attrs(LDAPMod ***modlist,char *line)
       make_one_attr(modlist,"pgpDisabled",disabled?"1":"0");
       make_one_attr(modlist,"pgpRevoked",revoked?"1":"0");
     }
-  else if (strcmp("sub",record)==0)
+  else if(ks_strcasecmp("sub",record)==0)
     {
       char *tok;
 
@@ -529,7 +525,7 @@ build_attrs(LDAPMod ***modlist,char *line)
       /* Ignore the rest of the items for subkeys since the LDAP
 	 schema doesn't store them. */
     }
-  else if (strcmp("uid",record)==0)
+  else if(ks_strcasecmp("uid",record)==0)
     {
       char *userid,*tok;
 
@@ -566,7 +562,7 @@ build_attrs(LDAPMod ***modlist,char *line)
 
       make_one_attr(modlist,"pgpUserID",userid);
     }
-  else if(strcmp("sig",record)==0)
+  else if(ks_strcasecmp("sig",record)==0)
     {
       char *tok;
 
@@ -593,14 +589,14 @@ free_mod_values(LDAPMod *mod)
 }
 
 static int
-send_key(int *eof)
+send_key(int *r_eof)
 {
   int err,begin=0,end=0,keysize=1,ret=KEYSERVER_INTERNAL_ERROR;
   char *dn=NULL,line[MAX_LINE],*key=NULL;
   char keyid[17],state[6];
   LDAPMod **modlist,**addlist,**ml;
 
-  modlist=xtrymalloc(sizeof(LDAPMod *));
+  modlist=malloc(sizeof(LDAPMod *));
   if(!modlist)
     {
       fprintf(console,"gpgkeys: can't allocate memory for keyserver record\n");
@@ -610,7 +606,7 @@ send_key(int *eof)
 
   *modlist=NULL;
 
-  addlist=xtrymalloc(sizeof(LDAPMod *));
+  addlist=malloc(sizeof(LDAPMod *));
   if(!addlist)
     {
       fprintf(console,"gpgkeys: can't allocate memory for keyserver record\n");
@@ -649,19 +645,19 @@ send_key(int *eof)
     {
       /* i.e. eof before the INFO BEGIN was found.  This isn't an
 	 error. */
-      *eof=1;
+      *r_eof=1;
       ret=KEYSERVER_OK;
       goto fail;
     }
 
   if(strlen(keyid)!=16)
     {
-      *eof=1;
+      *r_eof=1;
       ret=KEYSERVER_KEY_INCOMPLETE;
       goto fail;
     }
 
-  dn=xtrymalloc(strlen("pgpCertID=")+16+1+strlen(basekeyspacedn)+1);
+  dn=malloc(strlen("pgpCertID=")+16+1+strlen(basekeyspacedn)+1);
   if(dn==NULL)
     {
       fprintf(console,"gpgkeys: can't allocate memory for keyserver record\n");
@@ -671,7 +667,7 @@ send_key(int *eof)
 
   sprintf(dn,"pgpCertID=%s,%s",keyid,basekeyspacedn);
 
-  key=xtrymalloc(1);
+  key=malloc(1);
   if(!key)
     {
       fprintf(console,"gpgkeys: unable to allocate memory for key\n");
@@ -696,7 +692,7 @@ send_key(int *eof)
   if(!end)
     {
       fprintf(console,"gpgkeys: no INFO %s END found\n",keyid);
-      *eof=1;
+      *r_eof=1;
       ret=KEYSERVER_KEY_INCOMPLETE;
       goto fail;
     }
@@ -717,7 +713,7 @@ send_key(int *eof)
     {
       /* i.e. eof before the KEY BEGIN was found.  This isn't an
 	 error. */
-      *eof=1;
+      *r_eof=1;
       ret=KEYSERVER_OK;
       goto fail;
     }
@@ -751,7 +747,7 @@ send_key(int *eof)
   if(!end)
     {
       fprintf(console,"gpgkeys: no KEY %s END found\n",keyid);
-      *eof=1;
+      *r_eof=1;
       ret=KEYSERVER_KEY_INCOMPLETE;
       goto fail;
     }
@@ -790,9 +786,9 @@ send_key(int *eof)
   ret=KEYSERVER_OK;
 
  fail:
-  /* Unwind and free the whole modlist structure */
   if (modlist)
     {
+      /* Unwind and free the whole modlist structure */
       for(ml=modlist;*ml;ml++)
         {
           free_mod_values(*ml);
@@ -800,7 +796,6 @@ send_key(int *eof)
         }
       free(modlist);
     }
-
   free(addlist);
   free(dn);
   free(key);
@@ -812,7 +807,7 @@ send_key(int *eof)
 }
 
 static int
-send_key_keyserver(int *eof)
+send_key_keyserver(int *r_eof)
 {
   int err,begin=0,end=0,keysize=1,ret=KEYSERVER_INTERNAL_ERROR;
   char *dn=NULL,line[MAX_LINE],*key[2]={NULL,NULL};
@@ -826,7 +821,7 @@ send_key_keyserver(int *eof)
   attrs[0]=&mod;
   attrs[1]=NULL;
 
-  dn=xtrymalloc(strlen("pgpCertid=virtual,")+strlen(basekeyspacedn)+1);
+  dn=malloc(strlen("pgpCertid=virtual,")+strlen(basekeyspacedn)+1);
   if(dn==NULL)
     {
       fprintf(console,"gpgkeys: can't allocate memory for keyserver record\n");
@@ -837,7 +832,7 @@ send_key_keyserver(int *eof)
   strcpy(dn,"pgpCertid=virtual,");
   strcat(dn,basekeyspacedn);
 
-  key[0]=xtrymalloc(1);
+  key[0]=malloc(1);
   if(key[0]==NULL)
     {
       fprintf(console,"gpgkeys: unable to allocate memory for key\n");
@@ -861,7 +856,7 @@ send_key_keyserver(int *eof)
     {
       /* i.e. eof before the KEY BEGIN was found.  This isn't an
 	 error. */
-      *eof=1;
+      *r_eof=1;
       ret=KEYSERVER_OK;
       goto fail;
     }
@@ -892,7 +887,7 @@ send_key_keyserver(int *eof)
   if(!end)
     {
       fprintf(console,"gpgkeys: no KEY %s END found\n",keyid);
-      *eof=1;
+      *r_eof=1;
       ret=KEYSERVER_KEY_INCOMPLETE;
       goto fail;
     }
@@ -1057,7 +1052,7 @@ get_key(char *getkey)
   else
     {
       /* short key id */
-
+    
       sprintf(search,"(pgpkeyid=%.8s)",getkey);
     }
 
@@ -1298,7 +1293,7 @@ printquoted(FILE *stream,char *string,char delim)
   while(*string)
     {
       if(*string==delim || *string=='%')
-	fprintf(stream,"%%%02x",(unsigned char)*string);
+	fprintf(stream,"%%%02x",*string);
       else
 	fputc(*string,stream);
 
@@ -1322,7 +1317,7 @@ search_key(const char *searchkey)
 		 "pgpkeysize","pgpkeytype",NULL};
   enum ks_search_type search_type;
 
-  search=xtrymalloc(2+1+9+1+3+strlen(searchkey)+3+1+15+14+1+1+20);
+  search=malloc(2+1+9+1+3+strlen(searchkey)+3+1+15+14+1+1+20);
   if(!search)
     {
       fprintf(console,"gpgkeys: out of memory when building search list\n");
@@ -1507,9 +1502,9 @@ search_key(const char *searchkey)
 		    {
 		      /* The LDAP server doesn't exactly handle this
 			 well. */
-		      if(ascii_strcasecmp(vals[0],"RSA")==0)
+		      if(strcasecmp(vals[0],"RSA")==0)
 			fprintf(output,"1");
-		      else if(ascii_strcasecmp(vals[0],"DSS/DH")==0)
+		      else if(strcasecmp(vals[0],"DSS/DH")==0)
 			fprintf(output,"17");
 		      ldap_value_free(vals);
 		    }
@@ -1590,7 +1585,7 @@ search_key(const char *searchkey)
 		      vals=ldap_get_values(ldap,uids,"pgpcertid");
 		      if(vals!=NULL)
 			{
-			  if(ascii_strcasecmp(certid[0],vals[0])==0)
+			  if(strcasecmp(certid[0],vals[0])==0)
 			    {
 			      char **uidvals;
 
@@ -1685,7 +1680,7 @@ find_basekeyspacedn(void)
 	      LDAPMessage *si_res;
 	      char *object;
 
-	      object=xtrymalloc(17+strlen(context[i])+1);
+	      object=malloc(17+strlen(context[i])+1);
 	      if(!object)
 		return -1;
 
@@ -1787,12 +1782,12 @@ find_basekeyspacedn(void)
 	}
 
       ldap_msgfree(si_res);
-    }
+    }   
 
   return LDAP_SUCCESS;
 }
 
-static void
+static void 
 show_help (FILE *fp)
 {
   fprintf (fp,"-h, --help\thelp\n");
@@ -1893,25 +1888,25 @@ main(int argc,char *argv[])
 
 	  optionstr[MAX_OPTION]='\0';
 
-	  if(ascii_strncasecmp(optionstr,"no-",3)==0)
+	  if(strncasecmp(optionstr,"no-",3)==0)
 	    {
 	      no=1;
 	      start=&optionstr[3];
 	    }
 
-	  if(ascii_strncasecmp(start,"tls",3)==0)
+	  if(strncasecmp(start,"tls",3)==0)
 	    {
 	      if(no)
 		use_tls=0;
 	      else if(start[3]=='=')
 		{
-		  if(ascii_strcasecmp(&start[4],"no")==0)
+		  if(strcasecmp(&start[4],"no")==0)
 		    use_tls=0;
-		  else if(ascii_strcasecmp(&start[4],"try")==0)
+		  else if(strcasecmp(&start[4],"try")==0)
 		    use_tls=1;
-		  else if(ascii_strcasecmp(&start[4],"warn")==0)
+		  else if(strcasecmp(&start[4],"warn")==0)
 		    use_tls=2;
-		  else if(ascii_strcasecmp(&start[4],"require")==0)
+		  else if(strcasecmp(&start[4],"require")==0)
 		    use_tls=3;
 		  else
 		    use_tls=1;
@@ -1919,7 +1914,7 @@ main(int argc,char *argv[])
 	      else if(start[3]=='\0')
 		use_tls=1;
 	    }
-	  else if(ascii_strncasecmp(start,"basedn",6)==0)
+	  else if(strncasecmp(start,"basedn",6)==0)
 	    {
 	      if(no)
 		{
@@ -1941,7 +1936,7 @@ main(int argc,char *argv[])
 		  real_ldap=1;
 		}
 	    }
-	  else if(ascii_strncasecmp(start,"binddn",6)==0)
+	  else if(strncasecmp(start,"binddn",6)==0)
 	    {
 	      if(no)
 		{
@@ -1963,7 +1958,7 @@ main(int argc,char *argv[])
 		  real_ldap=1;
 		}
 	    }
-	  else if(ascii_strncasecmp(start,"bindpw",6)==0)
+	  else if(strncasecmp(start,"bindpw",6)==0)
 	    {
 	      if(no)
 		{
@@ -1997,7 +1992,7 @@ main(int argc,char *argv[])
       goto fail;
     }
 
-  if(ascii_strcasecmp(opt->scheme,"ldaps")==0)
+  if(strcasecmp(opt->scheme,"ldaps")==0)
     {
       port=636;
       use_ssl=1;
@@ -2056,7 +2051,7 @@ main(int argc,char *argv[])
 	      if(line[0]=='\n' || line[0]=='\0')
 		break;
 
-	      work=xtrymalloc(sizeof(struct keylist));
+	      work=malloc(sizeof(struct keylist));
 	      if(work==NULL)
 		{
 		  fprintf(console,"gpgkeys: out of memory while "
@@ -2302,7 +2297,7 @@ main(int argc,char *argv[])
     }
   else if(opt->action==KS_SEND)
     {
-      int eof=0;
+      int eof_seen = 0;
 
       do
 	{
@@ -2310,16 +2305,16 @@ main(int argc,char *argv[])
 
 	  if(real_ldap)
 	    {
-	      if(send_key(&eof)!=KEYSERVER_OK)
+	      if (send_key(&eof_seen) != KEYSERVER_OK)
 		failed++;
 	    }
 	  else
 	    {
-	      if(send_key_keyserver(&eof)!=KEYSERVER_OK)
+	      if (send_key_keyserver(&eof_seen) != KEYSERVER_OK)
 		failed++;
 	    }
 	}
-      while(!eof);
+      while (!eof_seen);
     }
   else if(opt->action==KS_SEARCH)
     {
@@ -2340,7 +2335,7 @@ main(int argc,char *argv[])
 	  keyptr=keyptr->next;
 	}
 
-      searchkey=xtrymalloc((len*3)+1);
+      searchkey=malloc((len*3)+1);
       if(searchkey==NULL)
 	{
 	  ret=KEYSERVER_NO_MEMORY;
@@ -2368,7 +2363,7 @@ main(int argc,char *argv[])
       free(searchkey);
     }
   else
-    assert (!"invalid action");
+    assert (!"bad action");
 
   if(!failed)
     ret=KEYSERVER_OK;

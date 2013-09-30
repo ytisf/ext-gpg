@@ -27,8 +27,11 @@
 #include <getopt.h>
 #endif
 
-#ifdef _WIN32
-#include <windows.h>
+#ifdef HAVE_W32_SYSTEM
+# ifdef HAVE_WINSOCK2_H
+#  include <winsock2.h>
+# endif
+# include <windows.h>
 #else
 #include <unistd.h>
 #include <sys/types.h>
@@ -44,8 +47,9 @@
 #include "util.h"
 #include "keyserver.h"
 #include "ksutil.h"
+#include "iobuf.h"
 
-#ifdef _WIN32
+#ifdef HAVE_W32_SYSTEM
 #define sock_close(a)  closesocket(a)
 #else
 #define sock_close(a)  close(a)
@@ -57,40 +61,6 @@ extern int optind;
 static FILE *input,*output,*console;
 static struct ks_options *opt;
 
-#ifdef _WIN32
-static void
-deinit_sockets (void)
-{
-  WSACleanup();
-}
-
-static void
-init_sockets (void)
-{
-  static int initialized;
-  static WSADATA wsdata;
-
-  if (initialized)
-    return;
-
-  if (WSAStartup (0x0101, &wsdata) )
-    {
-      fprintf (console, "error initializing socket library: ec=%d\n", 
-               (int)WSAGetLastError () );
-      return;
-    }
-  if (wsdata.wVersion < 0x0001)
-    {
-      fprintf (console, "socket library version is %x.%x - but 1.1 needed\n",
-               LOBYTE(wsdata.wVersion), HIBYTE(wsdata.wVersion));
-      WSACleanup();
-      return;
-    }
-  atexit  (deinit_sockets);
-  initialized = 1;
-}
-#endif /*_WIN32*/
-
 
 /* Connect to SERVER at PORT and return a file descriptor or -1 on
    error. */
@@ -99,12 +69,12 @@ connect_server (const char *server, unsigned short port)
 {
   int sock = -1;
 
-#ifdef _WIN32
+#ifdef HAVE_W32_SYSTEM
   struct hostent *hp;
   struct sockaddr_in addr;
   unsigned long l;
 
-  init_sockets ();
+  w32_init_sockets ();
 
   memset (&addr, 0, sizeof addr);
   addr.sin_family = AF_INET;
@@ -112,9 +82,9 @@ connect_server (const char *server, unsigned short port)
 
   /* Win32 gethostbyname doesn't handle IP addresses internally, so we
      try inet_addr first on that platform only. */
-  if ((l = inet_addr (server)) != INADDR_NONE) 
+  if ((l = inet_addr (server)) != INADDR_NONE)
     memcpy (&addr.sin_addr, &l, sizeof l);
-  else if ((hp = gethostbyname (server))) 
+  else if ((hp = gethostbyname (server)))
     {
       if (hp->h_addrtype != AF_INET)
         {
@@ -140,14 +110,14 @@ connect_server (const char *server, unsigned short port)
   sock = socket (AF_INET, SOCK_STREAM, 0);
   if (sock == INVALID_SOCKET)
     {
-      fprintf (console, "gpgkeys: error creating socket: ec=%d\n", 
+      fprintf (console, "gpgkeys: error creating socket: ec=%d\n",
                (int)WSAGetLastError ());
       return -1;
     }
 
   if (connect (sock, (struct sockaddr *)&addr, sizeof addr))
     {
-      fprintf (console, "gpgkeys: error connecting `%s': ec=%d\n", 
+      fprintf (console, "gpgkeys: error connecting `%s': ec=%d\n",
                server, (int)WSAGetLastError ());
       sock_close (sock);
       return -1;
@@ -167,26 +137,26 @@ connect_server (const char *server, unsigned short port)
                server, strerror (errno));
       return -1;
     }
-  
+
   addr.sin_addr = *(struct in_addr*)host->h_addr;
 
   sock = socket (AF_INET, SOCK_STREAM, 0);
   if (sock == -1)
     {
-      fprintf (console, "gpgkeys: error creating socket: %s\n", 
+      fprintf (console, "gpgkeys: error creating socket: %s\n",
                strerror (errno));
       return -1;
     }
-  
+
   if (connect (sock, (struct sockaddr *)&addr, sizeof addr) == -1)
     {
-      fprintf (console, "gpgkeys: error connecting `%s': %s\n", 
+      fprintf (console, "gpgkeys: error connecting `%s': %s\n",
                server, strerror (errno));
       close (sock);
       return -1;
     }
 #endif
-    
+
   return sock;
 }
 
@@ -196,11 +166,11 @@ write_server (int sock, const char *data, size_t length)
   int nleft;
 
   nleft = length;
-  while (nleft > 0) 
+  while (nleft > 0)
     {
       int nwritten;
-      
-#ifdef _WIN32  
+
+#ifdef HAVE_W32_SYSTEM
       nwritten = send (sock, data, nleft, 0);
       if ( nwritten == SOCKET_ERROR )
         {
@@ -217,7 +187,7 @@ write_server (int sock, const char *data, size_t length)
           if (errno == EAGAIN)
             {
               struct timeval tv;
-              
+
               tv.tv_sec =  0;
               tv.tv_usec = 50000;
               select(0, NULL, NULL, NULL, &tv);
@@ -230,7 +200,7 @@ write_server (int sock, const char *data, size_t length)
       nleft -=nwritten;
       data += nwritten;
     }
-  
+
   return 0;
 }
 
@@ -260,7 +230,7 @@ send_request (const char *request, int *r_sock)
       return KEYSERVER_GENERAL_ERROR;
     }
   *server++ = 0;
-  
+
   sock = connect_server (server, 79);
   if (sock == -1)
     {
@@ -287,7 +257,7 @@ get_key (char *getkey)
 {
   int rc;
   int sock;
-  IOBUF fp_read;
+  iobuf_t fp_read;
   unsigned int maxlen, buflen, gotit=0;
   byte *line = NULL;
 
@@ -305,7 +275,7 @@ get_key (char *getkey)
       sock_close (sock);
       return KEYSERVER_OK;
     }
-  
+
   /* Hmmm, we use iobuf here only to cope with Windows socket
      peculiarities (we can't used fdopen).  */
   fp_read = iobuf_sockopen (sock , "r");
@@ -319,10 +289,10 @@ get_key (char *getkey)
   while ( iobuf_read_line ( fp_read, &line, &buflen, &maxlen))
     {
       maxlen=1024;
-      
+
       if(gotit)
         {
-	  print_nocr (output, (const char*)line);
+	  print_nocr(output, (const char*)line);
           if (!strncmp((char*)line,END,strlen(END)))
             break;
         }
@@ -332,7 +302,7 @@ get_key (char *getkey)
           gotit=1;
         }
     }
-  
+
   if(gotit)
     fprintf (output,"KEY 0x%s END\n", getkey);
   else
@@ -349,7 +319,7 @@ get_key (char *getkey)
 }
 
 
-static void 
+static void
 show_help (FILE *fp)
 {
   fprintf (fp,"-h, --help\thelp\n");

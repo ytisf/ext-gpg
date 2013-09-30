@@ -1,5 +1,5 @@
-# Copyright (C) 1998,1999,2000,2001,2003,2010,2011,
-#               2012 Free Software Foundation, Inc.
+# Makefile.am - Top level makefile for GnuPG
+#     	Copyright (C) 2001, 2004, 2012 Free Software Foundation, Inc.
 #
 # This file is part of GnuPG.
 #
@@ -15,74 +15,80 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, see <http://www.gnu.org/licenses/>.
+
 ## Process this file with automake to produce Makefile.in
 
-ACLOCAL_AMFLAGS = -I m4
-# We can't use --enable-selinux-support because some of our regression
-# tests are importing secret keys and that is not allowed if
-# selinux-support is enabled.
-DISTCHECK_CONFIGURE_FLAGS = --enable-mailto
-AUTOMAKE_OPTIONS = dist-bzip2 filename-length-max=99
+ACLOCAL_AMFLAGS = -I m4 -I gl/m4
+AUTOMAKE_OPTIONS = dist-bzip2 no-dist-gzip
+DISTCHECK_CONFIGURE_FLAGS = --enable-symcryptrun --enable-mailto --enable-gpgtar
 
 GITLOG_TO_CHANGELOG=gitlog-to-changelog
 
-if CROSS_COMPILING
-checks =
+EXTRA_DIST = scripts/config.rpath autogen.sh README.SVN              \
+	     ChangeLog-2011 po/ChangeLog-2011 scripts/ChangeLog-2011
+
+DISTCLEANFILES = g10defs.h
+
+if BUILD_GPGSM
+kbx = kbx
 else
-checks = checks
+kbx =
+endif
+
+
+if BUILD_GPG
+gpg = g10
+keyserver = keyserver
+else
+gpg =
+keyserver =
+endif
+if BUILD_GPGSM
+sm = sm
+else
+sm =
+endif
+if BUILD_AGENT
+agent = agent
+else
+agent =
+endif
+if BUILD_SCDAEMON
+scd = scd
+else
+scd =
+endif
+if BUILD_TOOLS
+tools = tools
+else
+tools =
+endif
+if BUILD_DOC
+doc = doc
+else
+doc =
 endif
 
 if HAVE_W32_SYSTEM
-bzlib = bzlib
+tests =
 else
-bzlib =
+tests = tests
 endif
 
-SUBDIRS = m4 intl zlib ${bzlib} util mpi cipher tools \
-          g10 keyserver po doc ${checks}
+SUBDIRS = m4 gl include jnlib common ${kbx} \
+ ${gpg} ${keyserver} ${sm} ${agent} ${scd} ${tools} po ${doc} ${tests}
 
-EXTRA_DIST = scripts/config.rpath PROJECTS BUGS config.h.in	\
-             autogen.sh ChangeLog-2011 po/ChangeLog-2011	\
-             util/ChangeLog-2011 scripts/ChangeLog-2011		\
-             doc/ChangeLog-2011 tools/ChangeLog-2011		\
-             zlib/ChangeLog-2011 m4/ChangeLog-2011		\
-             include/ChangeLog-2011 g10/ChangeLog-2011		\
-             checks/ChangeLog-2011 cipher/ChangeLog-2011	\
-             intl/ChangeLog-2011 keyserver/ChangeLog-2011	\
-             tests/ChangeLog-2011 mpi/ChangeLog-2011
+dist_doc_DATA = README
 
 
-DISTCLEANFILES =
-
-# We do not install README into the doc directory because that would
-# conflict with GnuPG-2.
-# dist_doc_DATA = README
-
-
-# Add all the files listed in "distfiles" files to the distribution,
-# apply version numbers to some files and create a VERSION file which
-# we need for the Prereq: patch file trick.
 dist-hook: gen-ChangeLog
-	@set -e; \
-	 for file in `cd $(top_srcdir); \
-		     find scripts mpi include -type f -name distfiles`; do \
-	    dir=`dirname $$file` ; $(mkinstalldirs) $(distdir)/$$dir ; \
-	    for i in distfiles `cat $(top_srcdir)/$$file` ; do \
-		ln $(top_srcdir)/$$dir/$$i $(distdir)/$$dir/$$i 2> /dev/null \
-		|| cp -p $(top_srcdir)/$$dir/$$i $(distdir)/$$dir/$$i; \
-	    done ; \
-	done
-	@set -e; \
-	sed -e 's/@pkg_version@/$(VERSION)/g' \
-	    $(top_srcdir)/scripts/gnupg.spec.in \
-	    > $(distdir)/gnupg.spec
 	echo "$(VERSION)" > $(distdir)/VERSION
 
 
 gen_start_date = 2011-12-01T06:00:00
 .PHONY: gen-ChangeLog
 gen-ChangeLog:
-	set -e; 							\
+	set -e;								\
 	if test -d $(top_srcdir)/.git; then				\
 	  (cd $(top_srcdir) &&                      			\
 	    $(GITLOG_TO_CHANGELOG) --append-dot --tear-off		\
@@ -92,3 +98,7 @@ gen-ChangeLog:
 	  rm -f $(distdir)/ChangeLog;					\
 	  mv $(distdir)/cl-t $(distdir)/ChangeLog;			\
 	fi
+
+
+stowinstall:
+	$(MAKE) $(AM_MAKEFLAGS) install prefix=/usr/local/stow/gnupg

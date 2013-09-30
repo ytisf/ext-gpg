@@ -1,5 +1,6 @@
 /* curl-shim.h
- * Copyright (C) 2005, 2006, 2007, 2008, 2009 Free Software Foundation, Inc.
+ * Copyright (C) 2005, 2006, 2007, 2008, 2009,
+ *               2013 Free Software Foundation, Inc.
  *
  * This file is part of GNUPG.
  *
@@ -20,6 +21,7 @@
 #ifndef _CURL_SHIM_H_
 #define _CURL_SHIM_H_
 
+#include "util.h"
 #include "http.h"
 
 typedef enum
@@ -53,6 +55,11 @@ typedef enum
     CURLOPT_SRVTAG_GPG_HACK
   } CURLoption;
 
+typedef enum
+  {
+    CURLINFO_RESPONSE_CODE
+  } CURLINFO;
+
 typedef size_t (*write_func)(char *buffer,size_t size,
 			     size_t nitems,void *outstream);
 
@@ -75,7 +82,7 @@ typedef struct
     unsigned int failonerror:1;
     unsigned int verbose:1;
   } flags;
-  struct http_context hd;
+  http_t hd;
 } CURL;
 
 typedef struct
@@ -92,15 +99,16 @@ void curl_global_cleanup(void);
 CURL *curl_easy_init(void);
 CURLcode curl_easy_setopt(CURL *curl,CURLoption option,...);
 CURLcode curl_easy_perform(CURL *curl);
+CURLcode curl_easy_getinfo(CURL *curl, CURLINFO info, ... );
 void curl_easy_cleanup(CURL *curl);
-char *curl_easy_escape(CURL *curl,char *str,int len);
+char *curl_escape(char *str,int len);
 #define curl_free(x) free(x)
 #define curl_version() "GnuPG curl-shim"
 curl_version_info_data *curl_version_info(int type);
 
 struct curl_slist
 {
-  STRLIST list;
+  strlist_t list;
 };
 
 struct curl_slist *curl_slist_append(struct curl_slist *list,

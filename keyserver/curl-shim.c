@@ -1,7 +1,8 @@
 /* curl-shim.c - Implement a small subset of the curl API in terms of
  * the iobuf HTTP API
  *
- * Copyright (C) 2005, 2006, 2007, 2008, 2009 Free Software Foundation, Inc.
+ * Copyright (C) 2005, 2006, 2007, 2008, 2009, 2012,
+ *               2013 Free Software Foundation, Inc.
  *
  * This file is part of GnuPG.
  *
@@ -25,8 +26,9 @@
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
-#include "http.h"
+
 #include "util.h"
+#include "http.h"
 #include "ksutil.h"
 #include "curl-shim.h"
 
@@ -77,6 +79,7 @@ handle_error(CURL *curl,CURLcode err,const char *str)
 CURLcode
 curl_global_init(long flags)
 {
+  (void)flags;
   return CURLE_OK;
 }
 
@@ -88,6 +91,10 @@ curl_easy_init(void)
 {
   CURL *handle;
 
+#ifdef HAVE_W32_SYSTEM
+  w32_init_sockets ();
+#endif
+
   handle=calloc(1,sizeof(CURL));
   if(handle)
     handle->errors=stderr;
@@ -98,7 +105,11 @@ curl_easy_init(void)
 void
 curl_easy_cleanup(CURL *curl)
 {
-  free(curl);
+  if (curl)
+    {
+      http_close (curl->hd, 0);
+      free(curl);
+    }
 }
 
 CURLcode
@@ -164,6 +175,9 @@ curl_easy_perform(CURL *curl)
   CURLcode err=CURLE_OK;
   const char *errstr=NULL;
   char *proxy=NULL;
+  struct http_srv srv;
+
+  memset(&srv,0,sizeof(srv));
 
   /* Emulate the libcurl proxy behavior.  If the calling program set a
      proxy, use it.  If it didn't set a proxy or set it to NULL, check
@@ -176,10 +190,17 @@ curl_easy_perform(CURL *curl)
   else
     proxy=getenv(HTTP_PROXY_ENV);
 
+  if(curl->srvtag)
+    srv.srvtag=curl->srvtag;
+
   if(curl->flags.verbose)
     {
       fprintf(curl->errors,"* HTTP proxy is \"%s\"\n",proxy?proxy:"null");
       fprintf(curl->errors,"* HTTP URL is \"%s\"\n",curl->url);
+      if(srv.srvtag)
+	fprintf(curl->errors,
+		"* SRV tag is \"%s\": host and port may be overridden\n",
+		srv.srvtag);
       fprintf(curl->errors,"* HTTP auth is \"%s\"\n",
 	      curl->auth?curl->auth:"null");
       fprintf(curl->errors,"* HTTP method is %s\n",
@@ -188,44 +209,58 @@ curl_easy_perform(CURL *curl)
 
   if(curl->flags.post)
     {
-      rc=http_open(&curl->hd,HTTP_REQ_POST,curl->url,curl->auth,0,proxy,
-		   curl->srvtag,curl->headers?curl->headers->list:NULL);
-      if(rc==0)
+      rc = http_open (&curl->hd, HTTP_REQ_POST, curl->url, curl->auth,
+                      0, proxy, NULL, &srv,
+		      curl->headers?curl->headers->list:NULL);
+      if (!rc)
 	{
-	  char content_len[50];
-	  unsigned int post_len=strlen(curl->postfields);
+	  unsigned int post_len = strlen(curl->postfields);
 
-	  iobuf_writestr(curl->hd.fp_write,
-			 "Content-Type: application/x-www-form-urlencoded\r\n");
-	  sprintf(content_len,"Content-Length: %u\r\n",post_len);
+	  if(curl->flags.verbose && srv.used_server && srv.used_port)
+	    fprintf (curl->errors, "* HTTP host:port post-SRV is \"%s:%hu\"\n",
+		     srv.used_server, srv.used_port);
 
-	  iobuf_writestr(curl->hd.fp_write,content_len);
+	  es_fprintf (http_get_write_ptr (curl->hd),
+                      "Content-Type: application/x-www-form-urlencoded\r\n"
+                      "Content-Length: %u\r\n", post_len);
+	  http_start_data (curl->hd);
+	  es_write (http_get_write_ptr (curl->hd),
+                    curl->postfields, post_len, NULL);
 
-	  http_start_data(&curl->hd);
-	  iobuf_write(curl->hd.fp_write,curl->postfields,post_len);
-	  rc=http_wait_response(&curl->hd,&curl->status);
-	  if(rc==0 && curl->flags.failonerror && curl->status>=300)
-	    err=CURLE_HTTP_RETURNED_ERROR;
+	  rc = http_wait_response (curl->hd);
+          curl->status = http_get_status_code (curl->hd);
+	  if (!rc && curl->flags.failonerror && curl->status>=300)
+	    err = CURLE_HTTP_RETURNED_ERROR;
+          http_close (curl->hd, 0);
+          curl->hd = NULL;
 	}
     }
   else
     {
-      rc=http_open(&curl->hd,HTTP_REQ_GET,curl->url,curl->auth,0,proxy,
-		   curl->srvtag,curl->headers?curl->headers->list:NULL);
-      if(rc==0)
+      rc = http_open (&curl->hd, HTTP_REQ_GET, curl->url, curl->auth,
+                      0, proxy, NULL, &srv,
+		      curl->headers?curl->headers->list:NULL);
+      if (!rc)
 	{
-	  rc=http_wait_response(&curl->hd,&curl->status);
-	  if(rc==0)
+	  if(curl->flags.verbose && srv.used_server && srv.used_port)
+	    fprintf (curl->errors, "* HTTP host:port post-SRV is \"%s:%hu\"\n",
+		     srv.used_server, srv.used_port);
+
+	  rc = http_wait_response (curl->hd);
+          curl->status = http_get_status_code (curl->hd);
+	  if (!rc)
 	    {
-	      if(curl->flags.failonerror && curl->status>=300)
-		err=CURLE_HTTP_RETURNED_ERROR;
+	      if (curl->flags.failonerror && curl->status>=300)
+		err = CURLE_HTTP_RETURNED_ERROR;
 	      else
 		{
-		  unsigned int maxlen=1024,buflen,len;
-		  byte *line=NULL;
+		  size_t maxlen = 1024;
+                  size_t buflen;
+                  unsigned int len;
+		  char *line = NULL;
 
-		  while((len=iobuf_read_line(curl->hd.fp_read,
-					     &line,&buflen,&maxlen)))
+		  while ((len = es_read_line (http_get_read_ptr (curl->hd),
+                                              &line, &buflen, &maxlen)))
 		    {
 		      size_t ret;
 
@@ -239,36 +274,58 @@ curl_easy_perform(CURL *curl)
 			}
 		    }
 
-		  xfree(line);
-		  http_close(&curl->hd);
+		  es_free (line);
+		  http_close(curl->hd, 0);
+                  curl->hd = NULL;
 		}
 	    }
 	  else
-	    http_close(&curl->hd);
+            {
+              http_close (curl->hd, 0);
+              curl->hd = NULL;
+            }
 	}
     }
 
-  switch(rc)
+  xfree(srv.used_server);
+
+  switch(gpg_err_code (rc))
     {
     case 0:
       break;
 
-    case G10ERR_INVALID_URI:
+    case GPG_ERR_INV_URI:
       err=CURLE_UNSUPPORTED_PROTOCOL;
       break;
 
-    case G10ERR_NETWORK:
-      errstr=strerror(errno);
-      err=CURLE_COULDNT_CONNECT;
-      break;
-
     default:
-      errstr=g10_errstr(rc);
+      errstr=gpg_strerror (rc);
       err=CURLE_COULDNT_CONNECT;
       break;
     }
       
   return handle_error(curl,err,errstr);
+}
+
+CURLcode
+curl_easy_getinfo(CURL *curl, CURLINFO info, ... )
+{
+  va_list ap;
+  long *var;
+
+  va_start(ap,info);
+
+  switch(info)
+    {
+    case CURLINFO_RESPONSE_CODE:
+      var=va_arg(ap,long *);
+      *var=curl->status;
+      break;
+    default:
+      break;
+    }
+
+  return handle_error(curl,CURLE_OK,NULL);
 }
 
 /* This is not the same exact set that is allowed according to
@@ -278,7 +335,7 @@ curl_easy_perform(CURL *curl)
                         "0123456789"
 
 char *
-curl_easy_escape(CURL *curl,char *str,int length)
+curl_escape(char *str,int length)
 {
   int len,max,idx,enc_idx=0;
   char *enc;
@@ -288,7 +345,7 @@ curl_easy_escape(CURL *curl,char *str,int length)
   else
     len=strlen(str);
 
-  enc = xtrymalloc(len+1);
+  enc=malloc(len+1);
   if(!enc)
     return enc;
 
@@ -317,7 +374,7 @@ curl_easy_escape(CURL *curl,char *str,int length)
       else
 	{
 	  char numbuf[5];
-	  sprintf(numbuf,"%%%02X",(unsigned char)str[idx]);
+	  sprintf(numbuf,"%%%02X",str[idx]);
 	  strcpy(&enc[enc_idx],numbuf);
 	  enc_idx+=3;
 	}
@@ -333,6 +390,8 @@ curl_version_info(int type)
 {
   static curl_version_info_data data;
   static const char *protocols[]={"http",NULL};
+
+  (void)type;
 
   data.protocols=protocols;
 
