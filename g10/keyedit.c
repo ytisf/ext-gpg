@@ -1,6 +1,6 @@
 /* keyedit.c - keyedit stuff
  * Copyright (C) 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005, 2006, 2007,
- *               2008 Free Software Foundation, Inc.
+ *               2008, 2009, 2010 Free Software Foundation, Inc.
  *
  * This file is part of GnuPG.
  *
@@ -26,15 +26,16 @@
 #include <assert.h>
 #include <ctype.h>
 #ifdef HAVE_LIBREADLINE
-#include <stdio.h>
+#define GNUPG_LIBREADLINE_H_INCLUDED
 #include <readline/readline.h>
 #endif
+
+#include "gpg.h"
 #include "options.h"
 #include "packet.h"
-#include "errors.h"
+#include "status.h"
 #include "iobuf.h"
 #include "keydb.h"
-#include "memory.h"
 #include "photoid.h"
 #include "util.h"
 #include "main.h"
@@ -504,7 +505,7 @@ trustsig_prompt(byte *trust_value,byte *trust_depth,char **regexp)
  * if some user_ids are marked those will be signed.
  */
 static int
-sign_uids( KBNODE keyblock, STRLIST locusr, int *ret_modified,
+sign_uids( KBNODE keyblock, strlist_t locusr, int *ret_modified,
 	   int local, int nonrevocable, int trust, int interactive )
 {
     int rc = 0;
@@ -515,7 +516,6 @@ sign_uids( KBNODE keyblock, STRLIST locusr, int *ret_modified,
     PKT_public_key *primary_pk=NULL;
     int select_all = !count_selected_uids(keyblock) || interactive;
     int all_v3=1;
-    u32 timestamp=make_timestamp();
 
     /* Are there any non-v3 sigs on this key already? */
     if(PGP2)
@@ -543,7 +543,7 @@ sign_uids( KBNODE keyblock, STRLIST locusr, int *ret_modified,
         u32 sk_keyid[2],pk_keyid[2];
 	char *p,*trust_regexp=NULL;
 	int force_v4=0,class=0,selfsig=0;
-	u32 duration=0;
+	u32 duration=0,timestamp=0;
 	byte trust_depth=0,trust_value=0;
 
 	if(local || nonrevocable || trust ||
@@ -817,7 +817,9 @@ sign_uids( KBNODE keyblock, STRLIST locusr, int *ret_modified,
 
 	if(primary_pk->expiredate && !selfsig)
 	  {
-	    if(primary_pk->expiredate<=timestamp)
+	    u32 now=make_timestamp();
+
+	    if(primary_pk->expiredate<=now)
 	      {
 		tty_printf(_("This key has expired!"));
 
@@ -847,9 +849,14 @@ sign_uids( KBNODE keyblock, STRLIST locusr, int *ret_modified,
 					   "expire at the same time? (Y/n) "));
 		    if(answer_is_yes_no_default(answer,1))
 		      {
-			/* Set our signature expiration date to match
-			   when the key is going to expire. */
-			duration=primary_pk->expiredate-timestamp;
+			/* This fixes the signature timestamp we're
+			   going to make as now.  This is so the
+			   expiration date is exactly correct, and not
+			   a few seconds off (due to the time it takes
+			   to answer the questions, enter the
+			   passphrase, etc). */
+			timestamp=now;
+			duration=primary_pk->expiredate-now;
 			force_v4=1;
 		      }
 
@@ -864,9 +871,9 @@ sign_uids( KBNODE keyblock, STRLIST locusr, int *ret_modified,
 	if(!duration && !selfsig)
 	  {
 	    if(opt.ask_cert_expire)
-	      duration=ask_expire_interval(timestamp,1,opt.def_cert_expire);
+	      duration=ask_expire_interval(1,opt.def_cert_expire);
 	    else
-	      duration=parse_expire_string(timestamp,opt.def_cert_expire);
+	      duration=parse_expire_string(opt.def_cert_expire);
 	  }
 
 	if(duration)
@@ -1091,7 +1098,7 @@ sign_uids( KBNODE keyblock, STRLIST locusr, int *ret_modified,
  * We use only one passphrase for all keys.
  */
 static int
-change_passphrase( KBNODE keyblock )
+change_passphrase (KBNODE keyblock, int *r_err)
 {
     int rc = 0;
     int changed=0;
@@ -1144,7 +1151,15 @@ change_passphrase( KBNODE keyblock )
 	    no_primary_secrets = 1;
 	}
 	else {
+            u32 keyid[2];
+
 	    tty_printf(_("Key is protected.\n"));
+
+            /* Clear the passphrase cache so that the user is required
+               to enter the old passphrase.  */
+            keyid_from_sk (sk, keyid);
+            passphrase_clear_cache (keyid, NULL, 0);
+
 	    rc = check_secret_key( sk, 0 );
 	    if( !rc )
 		passphrase = get_last_passphrase();
@@ -1178,11 +1193,17 @@ change_passphrase( KBNODE keyblock )
 
 	set_next_passphrase( NULL );
 	for(;;) {
+            int canceled;
+
 	    s2k->mode = opt.s2k_mode;
 	    s2k->hash_algo = S2K_DIGEST_ALGO;
 	    dek = passphrase_to_dek( NULL, 0, opt.s2k_cipher_algo,
-                                     s2k, 2, errtext, NULL);
-	    if( !dek ) {
+                                     s2k, 2, errtext, &canceled);
+            if (!dek && canceled) {
+                rc = GPG_ERR_CANCELED;
+                break;
+            }
+	    else if( !dek ) {
 		errtext = N_("passphrase not correctly repeated; try again");
 		tty_printf ("%s.\n", _(errtext));
 	    }
@@ -1220,7 +1241,17 @@ change_passphrase( KBNODE keyblock )
 		    log_error("protect_secret_key failed: %s\n",
                               g10_errstr(rc) );
 		else
+                  {
+                    u32 keyid[2];
+
+                    /* Clear the cahce again so that the user is
+                       required to enter the new passphrase at the
+                       next operation.  */
+                    keyid_from_sk (sk, keyid);
+                    passphrase_clear_cache (keyid, NULL, 0);
+
 		    changed++;
+                  }
 		break;
 	    }
 	}
@@ -1231,6 +1262,8 @@ change_passphrase( KBNODE keyblock )
   leave:
     xfree( passphrase );
     set_next_passphrase( NULL );
+    if (r_err)
+      *r_err = rc;
     return changed && !rc;
 }
 
@@ -1481,6 +1514,8 @@ keyedit_completion(const char *text, int start, int end)
   /* If we are at the start of a line, we try and command-complete.
      If not, just do nothing for now. */
 
+  (void)end;
+
   if(start==0)
     return rl_completion_matches(text,command_generator);
 
@@ -1492,8 +1527,8 @@ keyedit_completion(const char *text, int start, int end)
 
 
 void
-keyedit_menu( const char *username, STRLIST locusr,
-	      STRLIST commands, int quiet, int seckey_check )
+keyedit_menu( const char *username, strlist_t locusr,
+	      strlist_t commands, int quiet, int seckey_check )
 {
     enum cmdids cmd = 0;
     int rc = 0;
@@ -1531,7 +1566,7 @@ keyedit_menu( const char *username, STRLIST locusr,
 #endif
 
     /* Get the public key */
-    rc = get_pubkey_byname (NULL, username, &keyblock, &kdbhd, 1);
+    rc = get_pubkey_byname (NULL, NULL, username, &keyblock, &kdbhd, 1, 1);
     if( rc )
 	goto leave;
     if( fix_keyblock( keyblock ) )
@@ -1541,8 +1576,8 @@ keyedit_menu( const char *username, STRLIST locusr,
     reorder_keyblock(keyblock);
     /* We modified the keyblock, so let's make sure the flags are
        right. */
-    if(modified)
-      merge_keys_and_selfsig( keyblock );
+    if (modified)
+      merge_keys_and_selfsig (keyblock);
 
     if(seckey_check)
       {/* see whether we have a matching secret key */
@@ -1615,7 +1650,9 @@ keyedit_menu( const char *username, STRLIST locusr,
 	    }
 	    if( !have_commands )
 	      {
+#ifdef HAVE_LIBREADLINE
 		tty_enable_completion(keyedit_completion);
+#endif
 		answer = cpr_get_no_help("keyedit.prompt", "gpg> ");
 		cpr_kill_prompt();
 		tty_disable_completion();
@@ -1708,12 +1745,22 @@ keyedit_menu( const char *username, STRLIST locusr,
 	    if(strlen(arg_string)==NAMEHASH_LEN*2)
 	      redisplay=menu_select_uid_namehash(cur_keyblock,arg_string);
 	    else
-	      redisplay=menu_select_uid(cur_keyblock,arg_number);
+              {
+                if (*arg_string == '*'
+                    && (!arg_string[1] || spacep (arg_string+1)))
+                  arg_number = -1; /* Select all. */
+                redisplay = menu_select_uid (cur_keyblock, arg_number);
+              }
 	    break;
 
 	  case cmdSELKEY:
-	    if( menu_select_key( cur_keyblock, arg_number ) )
+            {
+              if (*arg_string == '*'
+                  && (!arg_string[1] || spacep (arg_string+1)))
+                arg_number = -1; /* Select all. */
+              if (menu_select_key( cur_keyblock, arg_number))
 		redisplay = 1;
+            }
 	    break;
 
 	  case cmdCHECK:
@@ -1863,8 +1910,11 @@ keyedit_menu( const char *username, STRLIST locusr,
 	    switch ( count_selected_keys (sec_keyblock) )
 	      {
 	      case 0:
-		if (cpr_get_answer_is_yes("keyedit.keytocard.use_primary",
-				     _("Really move the primary key? (y/N) ")))
+                if (cpr_get_answer_is_yes
+                    ("keyedit.keytocard.use_primary",
+                     /* TRANSLATORS: Please take care: This is about
+                        moving the key and not about removing it.  */
+                     _("Really move the primary key? (y/N) ")))
 		  node = sec_keyblock;
 		break;
 	      case 1:
@@ -2073,15 +2123,15 @@ keyedit_menu( const char *username, STRLIST locusr,
 	    break;
 
 	  case cmdPASSWD:
-	    if( change_passphrase( sec_keyblock ) )
+	    if (change_passphrase (sec_keyblock, NULL))
 		sec_modified = 1;
 	    break;
 
 	  case cmdTRUST:
 	    if(opt.trust_model==TM_EXTERNAL)
 	      {
-		tty_printf(_("Owner trust may not be set while "
-			     "using a user provided trust database\n"));
+		tty_printf (_("Owner trust may not be set while "
+			      "using a user provided trust database\n"));
 		break;
 	      }
 
@@ -2251,6 +2301,71 @@ keyedit_menu( const char *username, STRLIST locusr,
     xfree(answer);
 }
 
+
+/* Change the passphrase of the secret key identified by USERNAME.  */
+void
+keyedit_passwd (const char *username)
+{
+  gpg_error_t err;
+  PKT_public_key *pk;
+  unsigned char fpr[MAX_FINGERPRINT_LEN];
+  size_t fprlen;
+  KEYDB_HANDLE kdh = NULL;
+  KBNODE keyblock = NULL;
+
+  pk = xtrycalloc (1, sizeof *pk);
+  if (!pk)
+    {
+      err = gpg_error_from_syserror ();
+      goto leave;
+    }
+  err = get_pubkey_byname (NULL, pk, username, NULL, NULL, 1, 1);
+  if (err)
+    goto leave;
+  fingerprint_from_pk (pk, fpr, &fprlen);
+  while (fprlen < MAX_FINGERPRINT_LEN)
+    fpr[fprlen++] = 0;
+
+  kdh = keydb_new (1);
+  if (!kdh)
+    {
+      err = gpg_error (GPG_ERR_GENERAL);
+      goto leave;
+    }
+
+  err = keydb_search_fpr (kdh, fpr);
+  if (err == -1 || gpg_err_code (err) == GPG_ERR_EOF)
+    err = gpg_error (GPG_ERR_NO_SECKEY);
+  if (err)
+    goto leave;
+
+  err = keydb_get_keyblock (kdh, &keyblock);
+  if (err)
+    goto leave;
+
+  if (!change_passphrase (keyblock, &err))
+    goto leave;
+
+  err = keydb_update_keyblock (kdh, keyblock);
+  if (err)
+    log_error( _("update secret failed: %s\n"), gpg_strerror (err));
+
+ leave:
+  release_kbnode (keyblock);
+  if (pk)
+    free_public_key (pk);
+  keydb_release (kdh);
+  if (err)
+    {
+      log_info ("error changing the passphrase for `%s': %s\n",
+                username, gpg_strerror (err));
+      write_status_error ("keyedit.passwd", gpg_err_code (err));
+    }
+  else
+    write_status_text (STATUS_SUCCESS, "keyedit.passwd");
+}
+
+
 static void
 tty_print_notations(int indent,PKT_signature *sig)
 {
@@ -2308,14 +2423,14 @@ show_prefs (PKT_user_id *uid, PKT_signature *selfsig, int verbose)
 	tty_printf (_("Cipher: "));
         for(i=any=0; prefs[i].type; i++ ) {
             if( prefs[i].type == PREFTYPE_SYM ) {
-                const char *s = cipher_algo_to_string (prefs[i].value);
-
                 if (any)
                     tty_printf (", ");
                 any = 1;
                 /* We don't want to display strings for experimental algos */
-                if (s && prefs[i].value < 100 )
-                    tty_printf ("%s", s );
+                if (!openpgp_cipher_test_algo (prefs[i].value)
+                    && prefs[i].value < 100 )
+                    tty_printf ("%s",
+                                openpgp_cipher_algo_name (prefs[i].value));
                 else
                     tty_printf ("[%d]", prefs[i].value);
                 if (prefs[i].value == CIPHER_ALGO_3DES )
@@ -2325,20 +2440,19 @@ show_prefs (PKT_user_id *uid, PKT_signature *selfsig, int verbose)
         if (!des_seen) {
             if (any)
                 tty_printf (", ");
-            tty_printf ("%s",cipher_algo_to_string(CIPHER_ALGO_3DES));
+            tty_printf ("%s", openpgp_cipher_algo_name (CIPHER_ALGO_3DES));
         }
         tty_printf ("\n     ");
 	tty_printf (_("Digest: "));
         for(i=any=0; prefs[i].type; i++ ) {
             if( prefs[i].type == PREFTYPE_HASH ) {
-                const char *s = digest_algo_to_string (prefs[i].value);
-
                 if (any)
                     tty_printf (", ");
                 any = 1;
                 /* We don't want to display strings for experimental algos */
-                if (s && prefs[i].value < 100 )
-                    tty_printf ("%s", s );
+                if (!gcry_md_test_algo (prefs[i].value)
+                    && prefs[i].value < 100 )
+                    tty_printf ("%s", gcry_md_algo_name (prefs[i].value) );
                 else
                     tty_printf ("[%d]", prefs[i].value);
                 if (prefs[i].value == DIGEST_ALGO_SHA1 )
@@ -2348,7 +2462,7 @@ show_prefs (PKT_user_id *uid, PKT_signature *selfsig, int verbose)
         if (!sha1_seen) {
             if (any)
                 tty_printf (", ");
-            tty_printf ("%s",digest_algo_to_string(DIGEST_ALGO_SHA1));
+            tty_printf ("%s", gcry_md_algo_name (DIGEST_ALGO_SHA1));
         }
         tty_printf ("\n     ");
 	tty_printf (_("Compression: "));
@@ -2488,6 +2602,17 @@ show_key_with_all_names_colon (KBNODE keyblock)
 	      && !(opt.fast_list_mode || opt.no_expensive_trust_checks ))
 	    putchar(get_ownertrust_info (pk));
           putchar(':');
+          putchar (':');
+          putchar (':');
+          /* Print capabilities.  */
+          if ( (pk->pubkey_usage & PUBKEY_USAGE_ENC) )
+            putchar ('e');
+          if ( (pk->pubkey_usage & PUBKEY_USAGE_SIG) )
+            putchar ('s');
+          if ( (pk->pubkey_usage & PUBKEY_USAGE_CERT) )
+            putchar ('c');
+          if ( (pk->pubkey_usage & PUBKEY_USAGE_AUTH) )
+            putchar ('a');
           putchar('\n');
 
           print_fingerprint (pk, NULL, 0);
@@ -2681,8 +2806,9 @@ show_key_with_all_names( KBNODE keyblock, int only_marked, int with_revoker,
 	    if(pk->is_revoked)
 	      {
 		char *user=get_user_id_string_native(pk->revoked.keyid);
-		const char *algo=pubkey_algo_to_string(pk->revoked.algo);
-		tty_printf(_("This key was revoked on %s by %s key %s\n"),
+		const char *algo = gcry_pk_algo_name (pk->revoked.algo);
+		tty_printf (_("The following key was revoked on"
+                              " %s by %s key %s\n"),
 			   revokestr_from_pk(pk),algo?algo:"?",user);
 		xfree(user);
 	      }
@@ -2696,9 +2822,9 @@ show_key_with_all_names( KBNODE keyblock, int only_marked, int with_revoker,
 		    {
 		      u32 r_keyid[2];
 		      char *user;
-		      const char *algo=
-			pubkey_algo_to_string(pk->revkey[i].algid);
+		      const char *algo;
 
+                      algo = gcry_pk_algo_name (pk->revkey[i].algid);
 		      keyid_from_fingerprint(pk->revkey[i].fpr,
 					     MAX_FINGERPRINT_LEN,r_keyid);
 
@@ -3023,7 +3149,7 @@ menu_adduid( KBNODE pub_keyblock, KBNODE sec_keyblock,
 
       uid = generate_photo_id(pk,photo_name);
     } else
-      uid = generate_user_id();
+      uid = generate_user_id (pub_keyblock);
     if( !uid )
 	return 0;
 
@@ -3234,17 +3360,17 @@ menu_clean(KBNODE keyblock,int self_only)
 	    }
 	  else if(sigs)
 	    {
-	      tty_printf (sigs==1?
-			  _("User ID \"%s\": %d signature removed\n"):
-                          _("User ID \"%s\": %d signatures removed\n"),
-                          user,sigs);
+	      tty_printf(sigs==1?
+			 _("User ID \"%s\": %d signature removed\n") :
+			 _("User ID \"%s\": %d signatures removed\n"),
+			 user,sigs);
 
 	      modified=1;
 	    }
 	  else
 	    {
 	      tty_printf (self_only==1?
-                          _("User ID \"%s\": already minimized\n"):
+                          _("User ID \"%s\": already minimized\n") :
                           _("User ID \"%s\": already clean\n"),
                           user);
 	    }
@@ -3382,7 +3508,7 @@ menu_addrevoker( KBNODE pub_keyblock, KBNODE sec_keyblock, int sensitive )
 	 GnuPG both can handle a designated revokation from a
 	 subkey. */
       revoker_pk->req_usage=PUBKEY_USAGE_CERT;
-      rc=get_pubkey_byname(revoker_pk,answer,NULL,NULL,1);
+      rc=get_pubkey_byname (NULL, revoker_pk,answer,NULL,NULL,1, 1);
       if(rc)
 	{
 	  log_error (_("key \"%s\" not found: %s\n"),answer,g10_errstr(rc));
@@ -3516,7 +3642,6 @@ menu_expire( KBNODE pub_keyblock, KBNODE sec_keyblock )
     PKT_user_id *uid;
     KBNODE node;
     u32 keyid[2];
-    u32 timestamp=make_timestamp();
 
     if( count_selected_keys( sec_keyblock ) ) {
 	tty_printf(_("Please remove selections from the secret keys.\n"));
@@ -3537,10 +3662,7 @@ menu_expire( KBNODE pub_keyblock, KBNODE sec_keyblock )
 	no_primary_warning(pub_keyblock);
       }
 
-    expiredate=ask_expire_interval(timestamp,0,NULL);
-    if(expiredate)
-      expiredate+=timestamp;
-
+    expiredate = ask_expiredate();
     node = find_kbnode( sec_keyblock, PKT_SECRET_KEY );
     sk = copy_secret_key( NULL, node->pkt->pkt.secret_key);
 
@@ -3599,13 +3721,6 @@ menu_expire( KBNODE pub_keyblock, KBNODE sec_keyblock )
 		if( !sn )
 		    log_info(_("No corresponding signature in secret ring\n"));
 
-		/* Note the potential oddity that the expiration date
-		   is calculated from the time when this function
-		   started ("timestamp"), but the signature is
-		   calculated from the time within
-		   update_keysig_packet().  On a slow or loaded
-		   machine, these two values may not match, making the
-		   expiration date off by a second or two. */
 		if( mainkey )
 		  rc = update_keysig_packet(&newsig, sig, main_pk, uid, NULL,
 					    sk, keygen_add_key_expire, main_pk);
@@ -4398,50 +4513,61 @@ menu_set_notation(const char *string,KBNODE pub_keyblock,KBNODE sec_keyblock)
 }
 
 
-/****************
- * Select one user id or remove all selection if index is 0.
- * Returns: True if the selection changed;
+/*
+ * Select one user id or remove all selection if IDX is 0 or select
+ * all if IDX is -1.  Returns: True if the selection changed.
  */
 static int
-menu_select_uid( KBNODE keyblock, int idx )
+menu_select_uid (KBNODE keyblock, int idx)
 {
-    KBNODE node;
-    int i;
+  KBNODE node;
+  int i;
 
-    /* first check that the index is valid */
-    if( idx ) {
-	for( i=0, node = keyblock; node; node = node->next ) {
-	    if( node->pkt->pkttype == PKT_USER_ID ) {
-		if( ++i == idx )
-		    break;
-	    }
-	}
-	if( !node ) {
-	    tty_printf(_("No user ID with index %d\n"), idx );
-	    return 0;
-	}
+  if (idx == -1) /* Select all. */
+    {
+      for (node = keyblock; node; node = node->next)
+        if (node->pkt->pkttype == PKT_USER_ID)
+          node->flag |= NODFLG_SELUID;
+      return 1;
     }
-    else { /* reset all */
-	for( i=0, node = keyblock; node; node = node->next ) {
-	    if( node->pkt->pkttype == PKT_USER_ID )
-		node->flag &= ~NODFLG_SELUID;
+  else if (idx) /* Toggle.  */
+    {
+      for (i=0, node = keyblock; node; node = node->next)
+        {
+          if (node->pkt->pkttype == PKT_USER_ID)
+            if (++i == idx)
+              break;
 	}
-	return 1;
+      if (!node)
+        {
+          tty_printf (_("No user ID with index %d\n"), idx );
+          return 0;
+	}
+
+      for (i=0, node = keyblock; node; node = node->next)
+        {
+          if (node->pkt->pkttype == PKT_USER_ID)
+            {
+              if (++i == idx)
+                {
+                  if ((node->flag & NODFLG_SELUID))
+                    node->flag &= ~NODFLG_SELUID;
+                  else
+                    node->flag |= NODFLG_SELUID;
+                }
+            }
+        }
     }
-    /* and toggle the new index */
-    for( i=0, node = keyblock; node; node = node->next ) {
-	if( node->pkt->pkttype == PKT_USER_ID ) {
-	    if( ++i == idx ) {
-		if( (node->flag & NODFLG_SELUID) )
-		    node->flag &= ~NODFLG_SELUID;
-		else
-		    node->flag |= NODFLG_SELUID;
-	    }
-	}
+  else /* Unselect all */
+    {
+      for (node = keyblock; node; node = node->next)
+        if (node->pkt->pkttype == PKT_USER_ID)
+          node->flag &= ~NODFLG_SELUID;
     }
 
-    return 1;
+  return 1;
 }
+
 
 /* Search in the keyblock for a uid that matches namehash */
 static int
@@ -4484,50 +4610,58 @@ menu_select_uid_namehash( KBNODE keyblock, const char *namehash )
 
 /****************
  * Select secondary keys
- * Returns: True if the selection changed;
+ * Returns: True if the selection changed.
  */
 static int
-menu_select_key( KBNODE keyblock, int idx )
+menu_select_key (KBNODE keyblock, int idx)
 {
-    KBNODE node;
-    int i;
+  KBNODE node;
+  int i;
 
-    /* first check that the index is valid */
-    if( idx ) {
-	for( i=0, node = keyblock; node; node = node->next ) {
-	    if( node->pkt->pkttype == PKT_PUBLIC_SUBKEY
-		|| node->pkt->pkttype == PKT_SECRET_SUBKEY ) {
-		if( ++i == idx )
-		    break;
-	    }
-	}
-	if( !node ) {
-	    tty_printf(_("No subkey with index %d\n"), idx );
-	    return 0;
-	}
+  if (idx == -1) /* Select all.  */
+    {
+      for (node = keyblock; node; node = node->next)
+        if (node->pkt->pkttype == PKT_PUBLIC_SUBKEY
+            || node->pkt->pkttype == PKT_SECRET_SUBKEY)
+          node->flag |= NODFLG_SELKEY;
     }
-    else { /* reset all */
-	for( i=0, node = keyblock; node; node = node->next ) {
-	    if( node->pkt->pkttype == PKT_PUBLIC_SUBKEY
-		|| node->pkt->pkttype == PKT_SECRET_SUBKEY )
-		node->flag &= ~NODFLG_SELKEY;
-	}
-	return 1;
+  else if (idx) /* Toggle selection.  */
+    {
+      for (i=0, node = keyblock; node; node = node->next)
+        {
+          if (node->pkt->pkttype == PKT_PUBLIC_SUBKEY
+              || node->pkt->pkttype == PKT_SECRET_SUBKEY)
+            if (++i == idx)
+              break;
+        }
+      if (!node)
+        {
+          tty_printf (_("No subkey with index %d\n"), idx );
+          return 0;
+        }
+
+      for (i=0, node = keyblock; node; node = node->next)
+        {
+          if( node->pkt->pkttype == PKT_PUBLIC_SUBKEY
+              || node->pkt->pkttype == PKT_SECRET_SUBKEY )
+            if (++i == idx)
+              {
+                if ((node->flag & NODFLG_SELKEY))
+                  node->flag &= ~NODFLG_SELKEY;
+                else
+                  node->flag |= NODFLG_SELKEY;
+              }
+        }
     }
-    /* and set the new index */
-    for( i=0, node = keyblock; node; node = node->next ) {
-	if( node->pkt->pkttype == PKT_PUBLIC_SUBKEY
-	    || node->pkt->pkttype == PKT_SECRET_SUBKEY ) {
-	    if( ++i == idx ) {
-		if( (node->flag & NODFLG_SELKEY) )
-		    node->flag &= ~NODFLG_SELKEY;
-		else
-		    node->flag |= NODFLG_SELKEY;
-	    }
-	}
+  else /* Unselect all. */
+    {
+      for (node = keyblock; node; node = node->next)
+        if (node->pkt->pkttype == PKT_PUBLIC_SUBKEY
+            || node->pkt->pkttype == PKT_SECRET_SUBKEY)
+          node->flag &= ~NODFLG_SELKEY;
     }
 
-    return 1;
+  return 1;
 }
 
 

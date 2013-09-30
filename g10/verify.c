@@ -1,4 +1,4 @@
-/* verify.c - verify signed data
+/* verify.c - Verify signed data
  * Copyright (C) 1998, 1999, 2000, 2001, 2002, 2004, 2005, 2006,
  *               2007 Free Software Foundation, Inc.
  *
@@ -24,14 +24,13 @@
 #include <string.h>
 #include <errno.h>
 #include <assert.h>
-#include <unistd.h> /* for isatty() */
 
+#include "gpg.h"
 #include "options.h"
 #include "packet.h"
-#include "errors.h"
+#include "status.h"
 #include "iobuf.h"
 #include "keydb.h"
-#include "memory.h"
 #include "util.h"
 #include "main.h"
 #include "status.h"
@@ -55,14 +54,13 @@ int
 verify_signatures( int nfiles, char **files )
 {
     IOBUF fp;
-    armor_filter_context_t afx;
-    progress_filter_context_t pfx;
+    armor_filter_context_t *afx = NULL;
+    progress_filter_context_t *pfx = new_progress_context ();
     const char *sigfile;
     int i, rc;
-    STRLIST sl;
+    strlist_t sl;
 
-    memset( &afx, 0, sizeof afx);
-    /* decide whether we should handle a detached or a normal signature,
+    /* Decide whether we should handle a detached or a normal signature,
      * which is needed so that the code later can hash the correct data and
      * not have a normal signature act as detached signature and ignoring the
      * indended signed material from the 2nd file or stdin.
@@ -71,7 +69,7 @@ verify_signatures( int nfiles, char **files )
      * 3. gpg file <file2  - detached
      * 4. gpg file file2   - detached
      * The question is how decide between case 2 and 3?  The only way
-     * we can do it is by reading one byte from stdin and the unget
+     * we can do it is by reading one byte from stdin and then unget
      * it; the problem here is that we may be reading from the
      * terminal (which could be detected using isatty() but won't work
      * when under contol of a pty using program (e.g. expect)) and
@@ -86,7 +84,6 @@ verify_signatures( int nfiles, char **files )
      * that all quite easily in mainproc.c 
      */
      
-
     sigfile = nfiles? *files : NULL;
 
     /* open the signature file */
@@ -98,13 +95,18 @@ verify_signatures( int nfiles, char **files )
         errno = EPERM;
       }
     if( !fp ) {
-	log_error(_("can't open `%s'\n"), print_fname_stdin(sigfile));
-	return G10ERR_OPEN_FILE;
+        rc = gpg_error_from_syserror ();
+	log_error(_("can't open `%s': %s\n"),
+                  print_fname_stdin(sigfile), strerror (errno));
+        goto leave;
     }
-    handle_progress (&pfx, fp, sigfile);
+    handle_progress (pfx, fp, sigfile);
 
-    if( !opt.no_armor && use_armor_filter( fp ) )
-	iobuf_push_filter( fp, armor_filter, &afx );
+    if ( !opt.no_armor && use_armor_filter( fp ) )
+      {
+        afx = new_armor_context ();
+	push_armor_filter (afx, fp);
+      }
 
     sl = NULL;
     for(i=nfiles-1 ; i > 0 ; i-- )
@@ -112,15 +114,19 @@ verify_signatures( int nfiles, char **files )
     rc = proc_signature_packets( NULL, fp, sl, sigfile );
     free_strlist(sl);
     iobuf_close(fp);
-    if( (afx.no_openpgp_data && rc == -1) || rc == G10ERR_NO_DATA ) {
+    if( (afx && afx->no_openpgp_data && rc == -1) || rc == G10ERR_NO_DATA ) {
 	log_error(_("the signature could not be verified.\n"
 		   "Please remember that the signature file (.sig or .asc)\n"
 		   "should be the first file given on the command line.\n") );
 	rc = 0;
     }
 
+ leave:
+    release_armor_context (afx);
+    release_progress_context (pfx);
     return rc;
 }
+
 
 
 void
@@ -137,8 +143,8 @@ static int
 verify_one_file( const char *name )
 {
     IOBUF fp;
-    armor_filter_context_t afx;
-    progress_filter_context_t pfx;
+    armor_filter_context_t *afx = NULL;
+    progress_filter_context_t *pfx = new_progress_context ();
     int rc;
 
     print_file_status( STATUS_FILE_START, name, 1 );
@@ -152,23 +158,30 @@ verify_one_file( const char *name )
         errno = EPERM;
       }
     if( !fp ) {
+        rc = gpg_error_from_syserror ();
+	log_error(_("can't open `%s': %s\n"),
+                  print_fname_stdin(name), strerror (errno));
 	print_file_status( STATUS_FILE_ERROR, name, 1 );
-	log_error(_("can't open `%s'\n"), print_fname_stdin(name));
-	return G10ERR_OPEN_FILE;
+        goto leave;
     }
-    handle_progress (&pfx, fp, name);
+    handle_progress (pfx, fp, name);
 
     if( !opt.no_armor ) {
 	if( use_armor_filter( fp ) ) {
-	    memset( &afx, 0, sizeof afx);
-	    iobuf_push_filter( fp, armor_filter, &afx );
+            afx = new_armor_context ();
+	    push_armor_filter (afx, fp);
 	}
     }
 
     rc = proc_signature_packets( NULL, fp, NULL, name );
     iobuf_close(fp);
     write_status( STATUS_FILE_DONE );
+
     reset_literals_seen();
+
+ leave:
+    release_armor_context (afx);
+    release_progress_context (pfx);
     return rc;
 }
 
@@ -197,15 +210,69 @@ verify_files( int nfiles, char **files )
 	     * spaces, so that we can process nearly all filenames */
 	    line[strlen(line)-1] = 0;
 	    verify_one_file( line );
-            iobuf_ioctl( NULL, 2, 0, NULL); /* Invalidate entire cache. */
 	}
 
     }
     else {  /* take filenames from the array */
-        for(i=0; i < nfiles; i++ ) {
+	for(i=0; i < nfiles; i++ )
 	    verify_one_file( files[i] );
-            iobuf_ioctl( NULL, 2, 0, NULL); /* Invalidate entire cache. */
-        }
     }
     return 0;
 }
+
+
+
+
+/* Perform a verify operation.  To verify detached signatures, DATA_FD
+   shall be the descriptor of the signed data; for regular signatures
+   it needs to be -1.  If OUT_FP is not NULL and DATA_FD is not -1 the
+   the signed material gets written that stream. 
+
+   FIXME: OUTFP is not yet implemented.
+*/
+int
+gpg_verify (ctrl_t ctrl, int sig_fd, int data_fd, FILE *out_fp)
+{
+  int rc;
+  iobuf_t fp;
+  armor_filter_context_t *afx = NULL;
+  progress_filter_context_t *pfx = new_progress_context ();
+
+  (void)ctrl;
+  (void)out_fp;
+
+  fp = iobuf_fdopen (sig_fd, "rb");
+  if (fp && is_secured_file (sig_fd))
+    {
+      fp = NULL;
+      errno = EPERM;
+    }
+  if ( !fp )
+    {
+      rc = gpg_error_from_syserror ();
+      log_error (_("can't open fd %d: %s\n"), sig_fd, strerror (errno));
+      goto leave;
+    }
+
+  handle_progress (pfx, fp, NULL);
+
+  if ( !opt.no_armor && use_armor_filter (fp) )
+    {
+      afx = new_armor_context ();
+      push_armor_filter (afx, fp);
+    }
+
+  rc = proc_signature_packets_by_fd ( NULL, fp, data_fd );
+
+  if ( afx && afx->no_openpgp_data
+       && (rc == -1 || gpg_err_code (rc) == GPG_ERR_EOF) )
+    rc = gpg_error (GPG_ERR_NO_DATA);
+
+ leave:  
+  if (fp)
+    iobuf_close (fp);
+  release_progress_context (pfx);
+  release_armor_context (afx);
+  return rc;
+}
+

@@ -24,21 +24,20 @@
 #include "cipher.h"
 
 typedef struct {
-    MD_HANDLE md;      /* catch all */
-    MD_HANDLE md2;     /* if we want to calculate an alternate hash */
+    gcry_md_hd_t md;      /* catch all */
+    gcry_md_hd_t md2;     /* if we want to calculate an alternate hash */
     size_t maxbuf_size;
 } md_filter_context_t;
 
 typedef struct {
-    int refcount;           /* Reference counter.  If 0 this structure
-                               is not allocated on the heap. */
+    int  refcount;          /* Initialized to 1.  */
 
     /* these fields may be initialized */
     int what;		    /* what kind of armor headers to write */
     int only_keyblocks;     /* skip all headers but ".... key block" */
     const char *hdrlines;   /* write these headerlines */
 
-    /* these fileds must be initialized to zero */
+    /* these fields must be initialized to zero */
     int no_openpgp_data;    /* output flag: "No valid OpenPGP data found" */
 
     /* the following fields must be initialized to zero */
@@ -93,9 +92,9 @@ typedef struct compress_filter_context_s compress_filter_context_t;
 typedef struct {
     DEK *dek;
     u32 datalen;
-    CIPHER_HANDLE cipher_hd;
+    gcry_cipher_hd_t cipher_hd;
     int header;
-    MD_HANDLE mdc_hash;
+    gcry_md_hd_t mdc_hash;
     byte enchash[20];
     int create_mdc; /* flag will be set by the cipher filter */
 } cipher_filter_context_t;
@@ -110,7 +109,7 @@ typedef struct {
     int truncated;	    /* number of truncated lines */
     int not_dash_escaped;
     int escape_from;
-    MD_HANDLE md;
+    gcry_md_hd_t md;
     int pending_lf;
     int pending_esc;
 } text_filter_context_t;
@@ -122,44 +121,43 @@ typedef struct {
     unsigned long last;		/* last amount reported */
     unsigned long offset;	/* current amount */
     unsigned long total;	/* total amount */
+    int  refcount;              
 } progress_filter_context_t;
 
 /* encrypt_filter_context_t defined in main.h */
 
 /*-- mdfilter.c --*/
-int md_filter( void *opaque, int control, IOBUF a, byte *buf, size_t *ret_len);
+int md_filter( void *opaque, int control, iobuf_t a, byte *buf, size_t *ret_len);
 void free_md_filter_context( md_filter_context_t *mfx );
 
 /*-- armor.c --*/
 armor_filter_context_t *new_armor_context (void);
 void release_armor_context (armor_filter_context_t *afx);
-int push_armor_filter (armor_filter_context_t *afx, IOBUF iobuf);
-int use_armor_filter( IOBUF a );
-int armor_filter( void *opaque, int control,
-		  IOBUF chain, byte *buf, size_t *ret_len);
+int push_armor_filter (armor_filter_context_t *afx, iobuf_t iobuf);
+int use_armor_filter( iobuf_t a );
 UnarmorPump unarmor_pump_new (void);
 void        unarmor_pump_release (UnarmorPump x);
 int         unarmor_pump (UnarmorPump x, int c);
 
 /*-- compress.c --*/
-void push_compress_filter(IOBUF out,compress_filter_context_t *zfx,int algo);
-void push_compress_filter2(IOBUF out,compress_filter_context_t *zfx,
+void push_compress_filter(iobuf_t out,compress_filter_context_t *zfx,int algo);
+void push_compress_filter2(iobuf_t out,compress_filter_context_t *zfx,
 			   int algo,int rel);
 
 /*-- cipher.c --*/
 int cipher_filter( void *opaque, int control,
-		   IOBUF chain, byte *buf, size_t *ret_len);
+		   iobuf_t chain, byte *buf, size_t *ret_len);
 
 /*-- textfilter.c --*/
 int text_filter( void *opaque, int control,
-		 IOBUF chain, byte *buf, size_t *ret_len);
-int copy_clearsig_text( IOBUF out, IOBUF inp, MD_HANDLE md,
-			  int escape_dash, int escape_from, int pgp2mode );
+		 iobuf_t chain, byte *buf, size_t *ret_len);
+int copy_clearsig_text (iobuf_t out, iobuf_t inp, gcry_md_hd_t md,
+                        int escape_dash, int escape_from, int pgp2mode);
 
 /*-- progress.c --*/
-int progress_filter (void *opaque, int control,
-		     IOBUF a, byte *buf, size_t *ret_len);
+progress_filter_context_t *new_progress_context (void);
+void release_progress_context (progress_filter_context_t *pfx);
 void handle_progress (progress_filter_context_t *pfx,
-		      IOBUF inp, const char *name);
+		      iobuf_t inp, const char *name);
 
 #endif /*G10_FILTER_H*/

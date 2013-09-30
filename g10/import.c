@@ -1,6 +1,6 @@
 /* import.c - import a key into our key storage.
- * Copyright (C) 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005,
- *               2006 Free Software Foundation, Inc.
+ * Copyright (C) 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005, 2006,
+ *               2007 Free Software Foundation, Inc.
  *
  * This file is part of GnuPG.
  *
@@ -25,11 +25,11 @@
 #include <errno.h>
 #include <assert.h>
 
+#include "gpg.h"
 #include "options.h"
 #include "packet.h"
-#include "errors.h"
+#include "status.h"
 #include "keydb.h"
-#include "memory.h"
 #include "util.h"
 #include "trustdb.h"
 #include "main.h"
@@ -238,13 +238,17 @@ import( IOBUF inp, const char* fname,struct stats_s *stats,
 	unsigned char **fpr,size_t *fpr_len,unsigned int options )
 {
     PACKET *pending_pkt = NULL;
-    KBNODE keyblock = NULL;
+    KBNODE keyblock = NULL;  /* Need to initialize because gcc can't
+                                grasp the return semantics of
+                                read_block. */
     int rc = 0;
 
     getkey_disable_caches();
 
     if( !opt.no_armor ) { /* armored reading is not disabled */
-	armor_filter_context_t *afx = new_armor_context ();
+	armor_filter_context_t *afx;
+
+        afx = new_armor_context ();
 	afx->only_keyblocks = 1;
 	push_armor_filter (afx, inp);
         release_armor_context (afx);
@@ -253,7 +257,7 @@ import( IOBUF inp, const char* fname,struct stats_s *stats,
     while( !(rc = read_block( inp, &pending_pkt, &keyblock) )) {
 	if( keyblock->pkt->pkttype == PKT_PUBLIC_KEY )
 	    rc = import_one( fname, keyblock, stats, fpr, fpr_len, options, 0);
-	else if( keyblock->pkt->pkttype == PKT_SECRET_KEY )
+	else if( keyblock->pkt->pkttype == PKT_SECRET_KEY ) 
                 rc = import_secret_one( fname, keyblock, stats, options );
 	else if( keyblock->pkt->pkttype == PKT_SIGNATURE
 		 && keyblock->pkt->pkt.signature->sig_class == 0x20 )
@@ -293,9 +297,9 @@ import_print_stats (void *hd)
 	    log_info(_("          w/o user IDs: %lu\n"), stats->no_user_id );
 	if( stats->imported || stats->imported_rsa ) {
 	    log_info(_("              imported: %lu"), stats->imported );
-	    if( stats->imported_rsa )
-		fprintf(stderr, "  (RSA: %lu)", stats->imported_rsa );
-	    putc('\n', stderr);
+	    if (stats->imported_rsa)
+              log_printf ("  (RSA: %lu)", stats->imported_rsa );
+	    log_printf ("\n");
 	}
 	if( stats->unchanged )
 	    log_info(_("             unchanged: %lu\n"), stats->unchanged );
@@ -339,6 +343,27 @@ import_print_stats (void *hd)
 		stats->skipped_new_keys,
                 stats->not_imported );
 	write_status_text( STATUS_IMPORT_RES, buf );
+    }
+}
+
+
+/* Return true if PKTTYPE is valid in a keyblock.  */
+static int
+valid_keyblock_packet (int pkttype)
+{
+  switch (pkttype)
+    {
+    case PKT_PUBLIC_KEY:
+    case PKT_PUBLIC_SUBKEY:
+    case PKT_SECRET_KEY:
+    case PKT_SECRET_SUBKEY:
+    case PKT_SIGNATURE:
+    case PKT_USER_ID:
+    case PKT_ATTRIBUTE:
+    case PKT_RING_TRUST:
+      return 1;
+    default:
+      return 0;
     }
 }
 
@@ -420,7 +445,7 @@ read_block( IOBUF a, PACKET **pending_pkt, KBNODE *ret_root )
 	    }
 	    in_cert = 1;
 	  default:
-	    if( in_cert ) {
+	    if (in_cert && valid_keyblock_packet (pkt->pkttype)) {
 		if( !root )
 		    root = new_kbnode( pkt );
 		else
@@ -524,9 +549,9 @@ fix_pks_corruption(KBNODE keyblock)
 static int
 fix_bad_direct_key_sigs (KBNODE keyblock, u32 *keyid)
 {
-  int rc;
-  int count = 0;
+  gpg_error_t err;
   KBNODE node;
+  int count = 0;
 
   for (node = keyblock->next; node; node=node->next)
     {
@@ -535,8 +560,8 @@ fix_bad_direct_key_sigs (KBNODE keyblock, u32 *keyid)
       if (node->pkt->pkttype == PKT_SIGNATURE
           && IS_KEY_SIG (node->pkt->pkt.signature))
         {
-          rc = check_key_signature (keyblock, node, NULL);
-          if (rc && rc != G10ERR_PUBKEY_ALGO )
+          err = check_key_signature (keyblock, node, NULL);
+          if (err && gpg_err_code (err) != GPG_ERR_PUBKEY_ALGO )
             {
               /* If we don't know the error, we can't decide; this is
                  not a problem because cmp_signature can't compare the
@@ -599,11 +624,8 @@ print_import_check (PKT_public_key * pk, PKT_user_id * id)
 static void
 check_prefs_warning(PKT_public_key *pk)
 {
-  log_info(_("WARNING: key %s contains preferences for unavailable\n"),
-            keystr_from_pk(pk));
-  /* TRANSLATORS: This string is belongs to the previous one.  They are
-     only split up to allow printing of a common prefix. */
-  log_info(_("         algorithms on these user IDs:\n"));
+  log_info(_("WARNING: key %s contains preferences for unavailable\n"
+             "algorithms on these user IDs:\n"), keystr_from_pk(pk));
 }
 
 static void
@@ -612,7 +634,7 @@ check_prefs(KBNODE keyblock)
   KBNODE node;
   PKT_public_key *pk;
   int problem=0;
-
+  
   merge_keys_and_selfsig(keyblock);
   pk=keyblock->pkt->pkt.public_key;
 
@@ -635,31 +657,37 @@ check_prefs(KBNODE keyblock)
 
 	      if(prefs->type==PREFTYPE_SYM)
 		{
-		  if(check_cipher_algo(prefs->value))
+		  if (openpgp_cipher_test_algo (prefs->value))
 		    {
-		      const char *algo=cipher_algo_to_string(prefs->value);
+		      const char *algo = 
+                        (openpgp_cipher_test_algo (prefs->value)
+                         ? num 
+                         : openpgp_cipher_algo_name (prefs->value));
 		      if(!problem)
 			check_prefs_warning(pk);
 		      log_info(_("         \"%s\": preference for cipher"
-				 " algorithm %s\n"),user,algo?algo:num);
+				 " algorithm %s\n"), user, algo);
 		      problem=1;
 		    }
 		}
 	      else if(prefs->type==PREFTYPE_HASH)
 		{
-		  if(check_digest_algo(prefs->value))
+		  if(openpgp_md_test_algo(prefs->value))
 		    {
-		      const char *algo=digest_algo_to_string(prefs->value);
+		      const char *algo =
+                        (gcry_md_test_algo (prefs->value)
+                         ? num 
+                         : gcry_md_algo_name (prefs->value));
 		      if(!problem)
 			check_prefs_warning(pk);
 		      log_info(_("         \"%s\": preference for digest"
-				 " algorithm %s\n"),user,algo?algo:num);
+				 " algorithm %s\n"), user, algo);
 		      problem=1;
 		    }
 		}
 	      else if(prefs->type==PREFTYPE_ZIP)
 		{
-		  if(check_compress_algo(prefs->value))
+		  if(check_compress_algo (prefs->value))
 		    {
 		      const char *algo=compress_algo_to_string(prefs->value);
 		      if(!problem)
@@ -684,7 +712,7 @@ check_prefs(KBNODE keyblock)
 
       if(!opt.batch)
 	{
-	  STRLIST sl=NULL,locusr=NULL;
+	  strlist_t sl=NULL,locusr=NULL;
 	  size_t fprlen=0;
 	  byte fpr[MAX_FINGERPRINT_LEN],*p;
 	  char username[(MAX_FINGERPRINT_LEN*2)+1];
@@ -712,7 +740,7 @@ check_prefs(KBNODE keyblock)
  * Try to import one keyblock.	Return an error only in serious cases, but
  * never for an invalid keyblock.  It uses log_error to increase the
  * internal errorcount, so that invalid input can be detected by programs
- * which called g10.
+ * which called gpg.
  */
 static int
 import_one( const char *fname, KBNODE keyblock, struct stats_s *stats,
@@ -727,6 +755,7 @@ import_one( const char *fname, KBNODE keyblock, struct stats_s *stats,
     int rc = 0;
     int new_key = 0;
     int mod_key = 0;
+    int same_key = 0;
     int non_self = 0;
 
     /* get the key and print some info about it */
@@ -745,18 +774,20 @@ import_one( const char *fname, KBNODE keyblock, struct stats_s *stats,
 		  nbits_from_pk( pk ),
 		  pubkey_letter( pk->pubkey_algo ),
 		  keystr_from_pk(pk), datestr_from_pk(pk) );
-	if( uidnode )
-	  print_utf8_string( stderr, uidnode->pkt->pkt.user_id->name,
+	if (uidnode)
+	  print_utf8_string (log_get_stream (),
+                             uidnode->pkt->pkt.user_id->name,
 			     uidnode->pkt->pkt.user_id->len );
-	putc('\n', stderr);
+	log_printf ("\n");
       }
+
 
     if( !uidnode )
       {
 	log_error( _("key %s: no user ID\n"), keystr_from_pk(pk));
 	return 0;
       }
-
+    
     if (opt.interactive) {
         if(is_status_enabled())
 	  print_import_check (pk, uidnode->pkt->pkt.user_id);
@@ -893,7 +924,7 @@ import_one( const char *fname, KBNODE keyblock, struct stats_s *stats,
             size_t an;
 
             fingerprint_from_pk (pk_orig, afp, &an);
-            while (an < MAX_FINGERPRINT_LEN)
+            while (an < MAX_FINGERPRINT_LEN) 
                 afp[an++] = 0;
             rc = keydb_search_fpr (hd, afp);
         }
@@ -917,7 +948,7 @@ import_one( const char *fname, KBNODE keyblock, struct stats_s *stats,
         n_sigs_cleaned = fix_bad_direct_key_sigs (keyblock_orig, keyid);
         if (n_sigs_cleaned)
           commit_kbnode (&keyblock_orig);
-
+            
 	/* and try to merge the block */
 	clear_kbnode_flags( keyblock_orig );
 	clear_kbnode_flags( keyblock );
@@ -987,13 +1018,14 @@ import_one( const char *fname, KBNODE keyblock, struct stats_s *stats,
 	    stats->n_sigs_cleaned +=n_sigs_cleaned;
 	    stats->n_uids_cleaned +=n_uids_cleaned;
 
-            if (is_status_enabled ())
+            if (is_status_enabled ()) 
                  print_import_ok (pk, NULL,
                                   ((n_uids?2:0)|(n_sigs?4:0)|(n_subk?8:0)));
 	}
 	else
 	  {
-	    if (is_status_enabled ())
+            same_key = 1;
+            if (is_status_enabled ()) 
 	      print_import_ok (pk, NULL, 0);
 
 	    if( !opt.quiet )
@@ -1010,6 +1042,33 @@ import_one( const char *fname, KBNODE keyblock, struct stats_s *stats,
     }
 
   leave:
+    if (mod_key || new_key || same_key)
+      {
+	/* A little explanation for this: we fill in the fingerprint
+	   when importing keys as it can be useful to know the
+	   fingerprint in certain keyserver-related cases (a keyserver
+	   asked for a particular name, but the key doesn't have that
+	   name).  However, in cases where we're importing more than
+	   one key at a time, we cannot know which key to fingerprint.
+	   In these cases, rather than guessing, we do not
+	   fingerprinting at all, and we must hope the user ID on the
+	   keys are useful.  Note that we need to do this for new
+	   keys, merged keys and even for unchanged keys.  This is
+	   required because for example the --auto-key-locate feature
+	   may import an already imported key and needs to know the
+	   fingerprint of the key in all cases.  */
+	if (fpr)
+	  {
+	    xfree (*fpr);
+            /* Note that we need to compare against 0 here because
+               COUNT gets only incremented after returning form this
+               function.  */
+	    if (stats->count == 0)
+	      *fpr = fingerprint_from_pk (pk, NULL, fpr_len);
+	    else
+	      *fpr = NULL;
+	  }
+      }
 
     /* Now that the key is definitely incorporated into the keydb, we
        need to check if a designated revocation is present or if the
@@ -1023,24 +1082,6 @@ import_one( const char *fname, KBNODE keyblock, struct stats_s *stats,
       }
     else if(new_key)
       {
-	/* A little explanation for this: we fill in the fingerprint
-	   when importing keys as it can be useful to know the
-	   fingerprint in certain keyserver-related cases (a keyserver
-	   asked for a particular name, but the key doesn't have that
-	   name).  However, in cases where we're importing more than
-	   one key at a time, we cannot know which key to fingerprint.
-	   In these cases, rather than guessing, we do not fingerpring
-	   at all, and we must hope the user ID on the keys are
-	   useful. */
-	if(fpr)
-	  {
-	    xfree(*fpr);
-	    if(stats->imported==1)
-	      *fpr=fingerprint_from_pk(pk,NULL,fpr_len);
-	    else
-	      *fpr=NULL;
-	  }
-
 	revocation_present(keyblock);
 	if(!from_sk && seckey_available(keyid)==0)
 	  check_prefs(keyblock);
@@ -1124,7 +1165,7 @@ sec_to_pub_keyblock(KBNODE sec_keyblock)
  * with the trust calculation.
  */
 static int
-import_secret_one( const char *fname, KBNODE keyblock,
+import_secret_one( const char *fname, KBNODE keyblock, 
                    struct stats_s *stats, unsigned int options)
 {
     PKT_secret_key *sk;
@@ -1150,7 +1191,7 @@ import_secret_one( const char *fname, KBNODE keyblock,
 	if( uidnode )
 	  print_utf8_string( stderr, uidnode->pkt->pkt.user_id->name,
 			     uidnode->pkt->pkt.user_id->len );
-	putc('\n', stderr);
+	log_printf ("\n");
       }
     stats->secret_read++;
 
@@ -1176,8 +1217,8 @@ import_secret_one( const char *fname, KBNODE keyblock,
         log_error (_("importing secret keys not allowed\n"));
         return 0;
       }
-#endif
-
+#endif 
+    
     clear_kbnode_flags( keyblock );
 
     /* do we have this key already in one of our secrings ? */
@@ -1203,7 +1244,7 @@ import_secret_one( const char *fname, KBNODE keyblock,
 	if( !opt.quiet )
 	  log_info( _("key %s: secret key imported\n"), keystr_from_sk(sk));
 	stats->secret_imported++;
-        if (is_status_enabled ())
+        if (is_status_enabled ()) 
 	  print_import_ok (NULL, sk, 1|16);
 
 	if(options&IMPORT_SK2PK)
@@ -1234,7 +1275,7 @@ import_secret_one( const char *fname, KBNODE keyblock,
 	log_error( _("key %s: already in secret keyring\n"),
 		   keystr_from_sk(sk));
 	stats->secret_dups++;
-        if (is_status_enabled ())
+        if (is_status_enabled ()) 
 	  print_import_ok (NULL, sk, 16);
 
 	/* TODO: if we ever do merge secret keys, make sure to handle
@@ -1259,6 +1300,8 @@ import_revoke_cert( const char *fname, KBNODE node, struct stats_s *stats )
     KEYDB_HANDLE hd = NULL;
     u32 keyid[2];
     int rc = 0;
+
+    (void)fname;
 
     assert( !node->next );
     assert( node->pkt->pkttype == PKT_SIGNATURE );
@@ -1288,9 +1331,9 @@ import_revoke_cert( const char *fname, KBNODE node, struct stats_s *stats )
     {
         byte afp[MAX_FINGERPRINT_LEN];
         size_t an;
-
+        
         fingerprint_from_pk (pk, afp, &an);
-        while (an < MAX_FINGERPRINT_LEN)
+        while (an < MAX_FINGERPRINT_LEN) 
             afp[an++] = 0;
         rc = keydb_search_fpr (hd, afp);
     }
@@ -1368,8 +1411,8 @@ import_revoke_cert( const char *fname, KBNODE node, struct stats_s *stats )
 }
 
 
-/****************
- * loop over the keyblock and check all self signatures.
+/*
+ * Loop over the keyblock and check all self signatures.
  * Mark all user-ids with a self-signature by setting flag bit 0.
  * Mark all user-ids with an invalid self-signature by setting bit 1.
  * This works also for subkeys, here the subkey is marked.  Invalid or
@@ -1381,181 +1424,192 @@ static int
 chk_self_sigs( const char *fname, KBNODE keyblock,
 	       PKT_public_key *pk, u32 *keyid, int *non_self )
 {
-    KBNODE n,knode=NULL;
-    PKT_signature *sig;
-    int rc;
-    u32 bsdate=0,rsdate=0;
-    KBNODE bsnode=NULL,rsnode=NULL;
+  KBNODE n, knode = NULL;
+  PKT_signature *sig;
+  int rc;
+  u32 bsdate=0,rsdate=0;
+  KBNODE bsnode = NULL, rsnode = NULL;
+  
+  (void)fname;
+  (void)pk;
 
-    for( n=keyblock; (n = find_next_kbnode(n, 0)); ) {
-      if(n->pkt->pkttype==PKT_PUBLIC_SUBKEY)
+  for (n=keyblock; (n = find_next_kbnode (n, 0)); ) 
+    {
+      if (n->pkt->pkttype == PKT_PUBLIC_SUBKEY)
 	{
-	  knode=n;
-	  bsdate=0;
-	  rsdate=0;
-	  bsnode=NULL;
-	  rsnode=NULL;
+	  knode = n;
+	  bsdate = 0;
+	  rsdate = 0;
+	  bsnode = NULL;
+	  rsnode = NULL;
 	  continue;
 	}
-      else if( n->pkt->pkttype != PKT_SIGNATURE )
-	    continue;
-	sig = n->pkt->pkt.signature;
-	if( keyid[0] == sig->keyid[0] && keyid[1] == sig->keyid[1] ) {
 
-	    /* This just caches the sigs for later use.  That way we
-	       import a fully-cached key which speeds things up. */
-	    if(!opt.no_sig_cache)
-	      check_key_signature(keyblock,n,NULL);
+      if ( n->pkt->pkttype != PKT_SIGNATURE )
+        continue;
+      
+      sig = n->pkt->pkt.signature;
+      if ( keyid[0] != sig->keyid[0] || keyid[1] != sig->keyid[1] )
+        {
+          *non_self = 1;
+          continue;
+        }
 
-	    if( IS_UID_SIG(sig) || IS_UID_REV(sig) )
-	      {
-		KBNODE unode = find_prev_kbnode( keyblock, n, PKT_USER_ID );
-		if( !unode )
-		  {
-		    log_error( _("key %s: no user ID for signature\n"),
-			       keystr(keyid));
-		    return -1;	/* the complete keyblock is invalid */
-		  }
+      /* This just caches the sigs for later use.  That way we
+         import a fully-cached key which speeds things up. */
+      if (!opt.no_sig_cache)
+        check_key_signature (keyblock, n, NULL);
+      
+      if ( IS_UID_SIG(sig) || IS_UID_REV(sig) )
+        {
+          KBNODE unode = find_prev_kbnode( keyblock, n, PKT_USER_ID );
+          if ( !unode )
+            {
+              log_error( _("key %s: no user ID for signature\n"),
+                         keystr(keyid));
+              return -1;  /* The complete keyblock is invalid.  */
+            }
+          
+          /* If it hasn't been marked valid yet, keep trying.  */
+          if (!(unode->flag&1)) 
+            {
+              rc = check_key_signature (keyblock, n, NULL);
+              if ( rc )
+                {
+                  if ( opt.verbose )
+                    {
+                      char *p = utf8_to_native 
+                        (unode->pkt->pkt.user_id->name,
+                         strlen (unode->pkt->pkt.user_id->name),0);
+                      log_info (gpg_err_code(rc) == G10ERR_PUBKEY_ALGO ?
+                                _("key %s: unsupported public key "
+                                  "algorithm on user ID \"%s\"\n"):
+                                _("key %s: invalid self-signature "
+                                  "on user ID \"%s\"\n"),
+                                keystr (keyid),p);
+                      xfree (p);
+                    }
+                }
+              else
+                unode->flag |= 1; /* Mark that signature checked. */
+            }
+        }
+      else if (IS_KEY_SIG (sig))
+        {
+          rc = check_key_signature (keyblock, n, NULL);
+          if ( rc )
+            {
+              if (opt.verbose)
+                log_info (gpg_err_code (rc) == G10ERR_PUBKEY_ALGO ?
+                          _("key %s: unsupported public key algorithm\n"):
+                          _("key %s: invalid direct key signature\n"),
+                          keystr (keyid));
+              n->flag |= 4;
+            }
+        }
+      else if ( IS_SUBKEY_SIG (sig) ) 
+        {
+          /* Note that this works based solely on the timestamps like
+             the rest of gpg.  If the standard gets revocation
+             targets, this may need to be revised.  */
 
-		/* If it hasn't been marked valid yet, keep trying */
-		if(!(unode->flag&1)) {
-		  rc = check_key_signature( keyblock, n, NULL);
-		  if( rc )
-		    {
-		      if( opt.verbose )
-			{
-			  char *p=utf8_to_native(unode->pkt->pkt.user_id->name,
-				      strlen(unode->pkt->pkt.user_id->name),0);
-			  log_info( rc == G10ERR_PUBKEY_ALGO ?
-				    _("key %s: unsupported public key "
-				      "algorithm on user ID \"%s\"\n"):
-				    _("key %s: invalid self-signature "
-				      "on user ID \"%s\"\n"),
-				    keystr(keyid),p);
-			  xfree(p);
-			}
-		    }
-		  else
-		    unode->flag |= 1; /* mark that signature checked */
-		}
-	      }
-            else if (IS_KEY_SIG (sig))
-              {
-                rc = check_key_signature (keyblock, n, NULL);
-                if ( rc )
-                  {
-                    if (opt.verbose)
-                      log_info (rc == G10ERR_PUBKEY_ALGO ?
-                                _("key %s: unsupported public key algorithm\n"):
-                                _("key %s: invalid direct key signature\n"),
-                                keystr (keyid));
-                    n->flag |= 4;
-                  }
-              }
-	    else if( sig->sig_class == 0x18 ) {
-	      /* Note that this works based solely on the timestamps
-		 like the rest of gpg.  If the standard gets
-		 revocation targets, this may need to be revised. */
-
-		if( !knode )
-		  {
-		    if(opt.verbose)
-		      log_info( _("key %s: no subkey for key binding\n"),
-				keystr(keyid));
-		    n->flag |= 4; /* delete this */
-		  }
-		else
-		  {
-		    rc = check_key_signature( keyblock, n, NULL);
-		    if( rc )
-		      {
-			if(opt.verbose)
-			  log_info(rc == G10ERR_PUBKEY_ALGO ?
-				   _("key %s: unsupported public key"
-				     " algorithm\n"):
-				   _("key %s: invalid subkey binding\n"),
-				   keystr(keyid));
-			n->flag|=4;
-		      }
-		    else
-		      {
-			/* It's valid, so is it newer? */
-			if(sig->timestamp>=bsdate) {
-			  knode->flag |= 1;  /* the subkey is valid */
-			  if(bsnode)
-			    {
-			      bsnode->flag|=4; /* Delete the last binding
-						  sig since this one is
-						  newer */
-			      if(opt.verbose)
-				log_info(_("key %s: removed multiple subkey"
-					   " binding\n"),keystr(keyid));
-			    }
-
-			  bsnode=n;
-			  bsdate=sig->timestamp;
-			}
-			else
-			  n->flag|=4; /* older */
-		      }
-		  }
-	    }
-	    else if( sig->sig_class == 0x28 ) {
-	      /* We don't actually mark the subkey as revoked right
-                 now, so just check that the revocation sig is the
-                 most recent valid one.  Note that we don't care if
-                 the binding sig is newer than the revocation sig.
-                 See the comment in getkey.c:merge_selfsigs_subkey for
-                 more */
-		if( !knode )
-		  {
-		    if(opt.verbose)
-		      log_info( _("key %s: no subkey for key revocation\n"),
-				keystr(keyid));
-		    n->flag |= 4; /* delete this */
-		  }
-		else
-		  {
-		    rc = check_key_signature( keyblock, n, NULL);
-		    if( rc )
-		      {
-			if(opt.verbose)
-			  log_info(rc == G10ERR_PUBKEY_ALGO ?
-				   _("key %s: unsupported public"
-				     " key algorithm\n"):
-				   _("key %s: invalid subkey revocation\n"),
-				   keystr(keyid));
-			n->flag|=4;
-		      }
-		    else
-		      {
-			/* It's valid, so is it newer? */
-			if(sig->timestamp>=rsdate)
-			  {
-			    if(rsnode)
-			      {
-				rsnode->flag|=4; /* Delete the last revocation
-						    sig since this one is
-						    newer */
-				if(opt.verbose)
-				  log_info(_("key %s: removed multiple subkey"
-					     " revocation\n"),keystr(keyid));
-			      }
-
-			    rsnode=n;
-			    rsdate=sig->timestamp;
-			  }
-			else
-			  n->flag|=4; /* older */
-		      }
-		  }
-	    }
-	}
-	else
-	  *non_self=1;
+          if ( !knode )
+            {
+              if (opt.verbose)
+                log_info (_("key %s: no subkey for key binding\n"),
+                          keystr (keyid));
+              n->flag |= 4; /* delete this */
+            }
+          else
+            {
+              rc = check_key_signature (keyblock, n, NULL);
+              if ( rc )
+                {
+                  if (opt.verbose)
+                    log_info (gpg_err_code (rc) == G10ERR_PUBKEY_ALGO ?
+                              _("key %s: unsupported public key"
+                                " algorithm\n"):
+                              _("key %s: invalid subkey binding\n"),
+                              keystr (keyid));
+                  n->flag |= 4;
+                }
+              else
+                {
+                  /* It's valid, so is it newer? */
+                  if (sig->timestamp >= bsdate) 
+                    {
+                      knode->flag |= 1;  /* The subkey is valid.  */
+                      if (bsnode)
+                        {
+                          /* Delete the last binding sig since this
+                             one is newer */
+                          bsnode->flag |= 4; 
+                          if (opt.verbose)
+                            log_info (_("key %s: removed multiple subkey"
+                                        " binding\n"),keystr(keyid));
+                        }
+                      
+                      bsnode = n;
+                      bsdate = sig->timestamp;
+                    }
+                  else
+                    n->flag |= 4; /* older */
+                }
+            }
+        }
+      else if ( IS_SUBKEY_REV (sig) )
+        {
+          /* We don't actually mark the subkey as revoked right now,
+             so just check that the revocation sig is the most recent
+             valid one.  Note that we don't care if the binding sig is
+             newer than the revocation sig.  See the comment in
+             getkey.c:merge_selfsigs_subkey for more.  */
+          if ( !knode )
+            {
+              if (opt.verbose)
+                log_info (_("key %s: no subkey for key revocation\n"),
+                          keystr(keyid));
+              n->flag |= 4; /* delete this */
+            }
+          else
+            {
+              rc = check_key_signature (keyblock, n, NULL);
+              if ( rc )
+                {
+                  if(opt.verbose)
+                    log_info (gpg_err_code (rc) == G10ERR_PUBKEY_ALGO ?
+                              _("key %s: unsupported public"
+                                " key algorithm\n"):
+                              _("key %s: invalid subkey revocation\n"),
+                              keystr(keyid));
+                  n->flag |= 4;
+                }
+              else
+                {
+                  /* It's valid, so is it newer? */
+                  if (sig->timestamp >= rsdate)
+                    {
+                      if (rsnode)
+                        {
+                          /* Delete the last revocation sig since
+                             this one is newer.  */
+                          rsnode->flag |= 4; 
+                          if (opt.verbose)
+                            log_info (_("key %s: removed multiple subkey"
+                                        " revocation\n"),keystr(keyid));
+                        }
+                      
+                      rsnode = n;
+                      rsdate = sig->timestamp;
+                    }
+                  else
+                    n->flag |= 4; /* older */
+                }
+            }
+        }
     }
 
-    return 0;
+  return 0;
 }
 
 /****************
@@ -1571,6 +1625,8 @@ delete_inv_parts( const char *fname, KBNODE keyblock,
 {
     KBNODE node;
     int nvalid=0, uid_seen=0, subkey_seen=0;
+
+    (void)fname;
 
     for(node=keyblock->next; node; node = node->next ) {
 	if( node->pkt->pkttype == PKT_USER_ID ) {
@@ -1614,9 +1670,9 @@ delete_inv_parts( const char *fname, KBNODE keyblock,
 	    else
 	      subkey_seen = 1;
 	}
-	else if( node->pkt->pkttype == PKT_SIGNATURE
-		 && check_pubkey_algo( node->pkt->pkt.signature->pubkey_algo)
-		 && node->pkt->pkt.signature->pubkey_algo != PUBKEY_ALGO_RSA )
+	else if (node->pkt->pkttype == PKT_SIGNATURE
+                && openpgp_pk_test_algo (node->pkt->pkt.signature->pubkey_algo)
+		&& node->pkt->pkt.signature->pubkey_algo != PUBKEY_ALGO_RSA )
 	    delete_kbnode( node ); /* build_packet() can't handle this */
 	else if( node->pkt->pkttype == PKT_SIGNATURE &&
 		 !node->pkt->pkt.signature->flags.exportable &&
@@ -2082,10 +2138,13 @@ merge_blocks( const char *fname, KBNODE keyblock_orig, KBNODE keyblock,
  * append the userid starting with NODE and all signatures to KEYBLOCK.
  */
 static int
-append_uid( KBNODE keyblock, KBNODE node, int *n_sigs,
-					  const char *fname, u32 *keyid )
+append_uid (KBNODE keyblock, KBNODE node, int *n_sigs,
+            const char *fname, u32 *keyid )
 {
     KBNODE n, n_where=NULL;
+
+    (void)fname;
+    (void)keyid;
 
     assert(node->pkt->pkttype == PKT_USER_ID );
 
@@ -2134,6 +2193,9 @@ merge_sigs( KBNODE dst, KBNODE src, int *n_sigs,
     KBNODE n, n2;
     int found=0;
 
+    (void)fname;
+    (void)keyid;
+
     assert(dst->pkt->pkttype == PKT_USER_ID );
     assert(src->pkt->pkttype == PKT_USER_ID );
 
@@ -2169,11 +2231,14 @@ merge_sigs( KBNODE dst, KBNODE src, int *n_sigs,
  * Merge the sigs from SRC onto DST. SRC and DST are both a PKT_xxx_SUBKEY.
  */
 static int
-merge_keysigs( KBNODE dst, KBNODE src, int *n_sigs,
-				    const char *fname, u32 *keyid )
+merge_keysigs (KBNODE dst, KBNODE src, int *n_sigs,
+               const char *fname, u32 *keyid)
 {
     KBNODE n, n2;
     int found=0;
+
+    (void)fname;
+    (void)keyid;
 
     assert(   dst->pkt->pkttype == PKT_PUBLIC_SUBKEY
 	   || dst->pkt->pkttype == PKT_SECRET_SUBKEY );
@@ -2222,10 +2287,13 @@ merge_keysigs( KBNODE dst, KBNODE src, int *n_sigs,
  * Mark all new and copied packets by setting flag bit 0.
  */
 static int
-append_key( KBNODE keyblock, KBNODE node, int *n_sigs,
-					  const char *fname, u32 *keyid )
+append_key (KBNODE keyblock, KBNODE node, int *n_sigs,
+            const char *fname, u32 *keyid)
 {
     KBNODE n;
+
+    (void)fname;
+    (void)keyid;
 
     assert( node->pkt->pkttype == PKT_PUBLIC_SUBKEY
 	   || node->pkt->pkttype == PKT_SECRET_SUBKEY );
@@ -2271,35 +2339,35 @@ pub_to_sec_keyblock (KBNODE pub_keyblock)
 	  PACKET *pkt = xmalloc_clear (sizeof *pkt);
 	  PKT_secret_key *sk = xmalloc_clear (sizeof *sk);
           int i, n;
-
+          
           if (pubnode->pkt->pkttype == PKT_PUBLIC_KEY)
 	    pkt->pkttype = PKT_SECRET_KEY;
 	  else
 	    pkt->pkttype = PKT_SECRET_SUBKEY;
-
+          
 	  pkt->pkt.secret_key = sk;
 
           copy_public_parts_to_secret_key ( pk, sk );
 	  sk->version     = pk->version;
 	  sk->timestamp   = pk->timestamp;
-
+        
           n = pubkey_get_npkey (pk->pubkey_algo);
           if (!n)
             n = 1; /* Unknown number of parameters, however the data
                       is stored in the first mpi. */
           for (i=0; i < n; i++ )
             sk->skey[i] = mpi_copy (pk->pkey[i]);
-
+  
           sk->is_protected = 1;
           sk->protect.s2k.mode = 1001;
-
+  
   	  secnode = new_kbnode (pkt);
         }
       else
 	{
 	  secnode = clone_kbnode (pubnode);
 	}
-
+      
       if(!sec_keyblock)
 	sec_keyblock = secnode;
       else
@@ -2313,12 +2381,12 @@ pub_to_sec_keyblock (KBNODE pub_keyblock)
 /* Walk over the secret keyring SEC_KEYBLOCK and update any simple
    stub keys with the serial number SNNUM of the card if one of the
    fingerprints FPR1, FPR2 or FPR3 match.  Print a note if the key is
-   a duplicate (may happen in case of backed uped keys).
-
+   a duplicate (may happen in case of backed uped keys). 
+   
    Returns: True if anything changed.
 */
 static int
-update_sec_keyblock_with_cardinfo (KBNODE sec_keyblock,
+update_sec_keyblock_with_cardinfo (KBNODE sec_keyblock, 
                                    const unsigned char *fpr1,
                                    const unsigned char *fpr2,
                                    const unsigned char *fpr3,
@@ -2338,7 +2406,7 @@ update_sec_keyblock_with_cardinfo (KBNODE sec_keyblock,
           && node->pkt->pkttype != PKT_SECRET_SUBKEY)
         continue;
       sk = node->pkt->pkt.secret_key;
-
+      
       fingerprint_from_sk (sk, array, &n);
       if (n != 20)
         continue; /* Can't be a card key.  */
@@ -2388,7 +2456,7 @@ update_sec_keyblock_with_cardinfo (KBNODE sec_keyblock,
    exists, add appropriate subkey stubs and update the secring.
    Return 0 if the key could be created. */
 int
-auto_create_card_key_stub ( const char *serialnostr,
+auto_create_card_key_stub ( const char *serialnostr, 
                             const unsigned char *fpr1,
                             const unsigned char *fpr2,
                             const unsigned char *fpr3)
@@ -2399,7 +2467,7 @@ auto_create_card_key_stub ( const char *serialnostr,
   int rc;
 
   /* We only want to do this for an OpenPGP card.  */
-  if (!serialnostr || strncmp (serialnostr, "D27600012401", 12)
+  if (!serialnostr || strncmp (serialnostr, "D27600012401", 12) 
       || strlen (serialnostr) != 32 )
     return G10ERR_GENERAL;
 
@@ -2410,7 +2478,7 @@ auto_create_card_key_stub ( const char *serialnostr,
     ;
   else
     return G10ERR_GENERAL;
-
+ 
   hd = keydb_new (1);
 
   /* Now check whether there is a secret keyring.  */
@@ -2436,7 +2504,7 @@ auto_create_card_key_stub ( const char *serialnostr,
       else
         {
           merge_keys_and_selfsig (sec_keyblock);
-
+          
           /* FIXME: We need to add new subkeys first.  */
           if (update_sec_keyblock_with_cardinfo (sec_keyblock,
                                                  fpr1, fpr2, fpr3,
@@ -2470,10 +2538,9 @@ auto_create_card_key_stub ( const char *serialnostr,
                        keydb_get_resource_name (hd), g10_errstr(rc) );
         }
     }
-
+    
   release_kbnode (sec_keyblock);
   release_kbnode (pub_keyblock);
   keydb_release (hd);
   return rc;
 }
-

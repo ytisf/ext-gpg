@@ -57,7 +57,10 @@ struct trust_record {
 	    byte  min_cert_level;
 	    ulong created;   /* timestamp of trustdb creation  */
 	    ulong nextcheck; /* timestamp of next scheduled check */
+	    ulong reserved;  
+	    ulong reserved2;
 	    ulong firstfree;
+	    ulong reserved3;
             ulong trusthashtbl;
 	} ver;
 	struct {	    /* free record */
@@ -79,7 +82,7 @@ struct trust_record {
       } trust;
       struct {
         byte namehash[20];
-        ulong next;
+        ulong next;  
         byte validity;
 	byte full_count;
 	byte marginal_count;
@@ -109,6 +112,7 @@ ulong tdbio_new_recnum(void);
 int tdbio_search_trust_byfpr(const byte *fingerprint, TRUSTREC *rec );
 int tdbio_search_trust_bypk(PKT_public_key *pk, TRUSTREC *rec );
 
+void tdbio_how_to_fix (void);
 void tdbio_invalid(void);
 
 #endif /*G10_TDBIO_H*/

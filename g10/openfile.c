@@ -28,8 +28,9 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+
+#include "gpg.h"
 #include "util.h"
-#include "memory.h"
 #include "ttyio.h"
 #include "options.h"
 #include "main.h"
@@ -96,13 +97,9 @@ overwrite_filep( const char *fname )
 
 
 /****************
- * Strip know extensions from iname and return a newly allocated
+ * Strip known extensions from iname and return a newly allocated
  * filename.  Return NULL if we can't do that.
- *
- * (See vmslib/vms.c for the VMS-specific replacement function,
- * vms_make_outfile_name())
  */
-#ifndef __VMS
 char *
 make_outfile_name( const char *iname )
 {
@@ -129,48 +126,49 @@ make_outfile_name( const char *iname )
     log_info(_("%s: unknown suffix\n"), iname );
     return NULL;
 }
-#endif /* ndef __VMS */
 
 
-/****************
- * Ask for a outputfilename and use the given one as default.
- * Return NULL if no file has been given or it is not possible to
- * ask the user.
+/* Ask for an output filename; use the given one as default.  Return
+   NULL if no file has been given or if it is not possible to ask the
+   user.  NAME is the template len which might conatin enbedded Nuls.
+   NAMELEN is its actual length.
  */
 char *
 ask_outfile_name( const char *name, size_t namelen )
 {
-    size_t n;
-    const char *s;
-    char *prompt;
-    char *fname;
-    char *defname;
+  size_t n;
+  const char *s;
+  char *prompt;
+  char *fname;
+  char *defname;
 
-    if( opt.batch )
-	return NULL;
+  if ( opt.batch )
+    return NULL;
+  
+  defname = name && namelen? make_printable_string (name, namelen, 0) : NULL;
 
-    s = _("Enter new filename");
-
-    defname = name && namelen? make_printable_string( name, namelen, 0): NULL;
-    n = strlen(s) + (defname?strlen (defname):0) + 10;
-    prompt = xmalloc(n);
-    if( defname )
-	sprintf(prompt, "%s [%s]: ", s, defname );
-    else
-	sprintf(prompt, "%s: ", s );
-    tty_enable_completion(NULL);
-    fname = cpr_get("openfile.askoutname", prompt );
-    cpr_kill_prompt();
-    tty_disable_completion();
-    xfree(prompt);
-    if( !*fname ) {
-	xfree( fname ); fname = NULL;
-	fname = defname; defname = NULL;
+  s = _("Enter new filename");
+  n = strlen(s) + (defname?strlen (defname):0) + 10;
+  prompt = xmalloc (n);
+  if (defname)
+    snprintf (prompt, n-1, "%s [%s]: ", s, defname );
+  else
+    snprintf (prompt, n-1, "%s: ", s );
+  tty_enable_completion(NULL);
+  fname = cpr_get ("openfile.askoutname", prompt );
+  cpr_kill_prompt ();
+  tty_disable_completion ();
+  xfree (prompt);
+  if ( !*fname ) 
+    {
+      xfree (fname); 
+      fname = defname;
+      defname = NULL;
     }
-    xfree(defname);
-    if (fname)
-        trim_spaces (fname);
-    return fname;
+  xfree (defname);
+  if (fname)
+    trim_spaces (fname);
+  return fname;
 }
 
 
@@ -190,8 +188,8 @@ open_outfile( const char *iname, int mode, IOBUF *a )
   if( iobuf_is_pipe_filename (iname) && !opt.outfile ) {
     *a = iobuf_create(NULL);
     if( !*a ) {
+      rc = gpg_error_from_syserror ();
       log_error(_("can't open `%s': %s\n"), "[stdout]", strerror(errno) );
-      rc = G10ERR_CREATE_FILE;
     }
     else if( opt.verbose )
       log_info(_("writing to stdout\n"));
@@ -214,10 +212,10 @@ open_outfile( const char *iname, int mode, IOBUF *a )
 #ifdef USE_ONLY_8DOT3
       if (opt.mangle_dos_filenames)
         {
-          /* It is quite common for DOS system to have only one dot in a
+          /* It is quite common DOS system to have only one dot in a
            * a filename So if we have something like this, we simple
-           * replace the suffix except in cases where the suffix is
-           * larger than 3 characters and not identlically to the new one.
+           * replace the suffix execpt in cases where the suffix is
+           * larger than 3 characters and not the same as.
            * We should really map the filenames to 8.3 but this tends to
            * be more complicated and is probaly a duty of the filesystem
            */
@@ -227,34 +225,23 @@ open_outfile( const char *iname, int mode, IOBUF *a )
           
           buf = xmalloc(strlen(iname)+4+1);
           strcpy(buf,iname);
-          dot = strrchr(buf, '.' );
+          dot = strchr(buf, '.' );
           if ( dot && dot > buf && dot[1] && strlen(dot) <= 4
-               && CMP_FILENAME(newsfx, dot) 
-               && !(strchr (dot, '/') || strchr (dot, '\\')))
+				  && CMP_FILENAME(newsfx, dot) )
             {
-              /* There is a dot, the dot is not the first character,
-                 the suffix is not longer than 3, the suffix is not
-                 equal to the new suffix and tehre is no path delimter
-                 after the dot (e.g. foo.1/bar): Replace the
-                 suffix. */
-              strcpy (dot, newsfx );
+              strcpy(dot, newsfx );
             }
-          else if ( dot && !dot[1] ) /* Don't duplicate a trailing dot. */
-            strcpy ( dot, newsfx+1 );
+          else if ( dot && !dot[1] ) /* don't duplicate a dot */
+            strcpy( dot, newsfx+1 );
           else
-            strcat ( buf, newsfx ); /* Just append the new suffix. */
+            strcat ( buf, newsfx );
         }
       if (!buf)
 #endif /* USE_ONLY_8DOT3 */
         {
           buf = xmalloc(strlen(iname)+4+1);
-#ifdef __VMS
-          vms_append_ext (buf, iname,
-                         mode==1 ? "asc" : mode==2 ? "sig" : "gpg");
-#else /*!def __VMS*/
           strcpy(stpcpy(buf,iname), mode==1 ? EXTSEP_S "asc" :
 		                   mode==2 ? EXTSEP_S "sig" : EXTSEP_S "gpg");
-#endif /*!def __VMS*/
         }
       name = buf;
     }
@@ -266,7 +253,7 @@ open_outfile( const char *iname, int mode, IOBUF *a )
         if ( !tmp || !*tmp )
           {
             xfree (tmp);
-            rc = G10ERR_FILE_EXISTS;
+            rc = gpg_error (GPG_ERR_EEXIST);
             break;
           }
         xfree (buf);
@@ -284,8 +271,8 @@ open_outfile( const char *iname, int mode, IOBUF *a )
           *a = iobuf_create( name );
         if( !*a )
           {
+            rc = gpg_error_from_syserror ();
             log_error(_("can't create `%s': %s\n"), name, strerror(errno) );
-            rc = G10ERR_CREATE_FILE;
           }
         else if( opt.verbose )
           log_info(_("writing to `%s'\n"), name );
@@ -341,7 +328,7 @@ open_sigfile( const char *iname, progress_filter_context_t *pfx )
 static void
 copy_options_file( const char *destdir )
 {
-    const char *datadir = GNUPG_DATADIR;
+    const char *datadir = gnupg_datadir ();
     char *fname;
     FILE *src, *dst;
     int linefeeds=0;
@@ -354,7 +341,7 @@ copy_options_file( const char *destdir )
 	return;
 
     fname = xmalloc( strlen(datadir) + strlen(destdir) + 15 );
-    strcpy(stpcpy(fname, datadir), DIRSEP_S "options" SKELEXT );
+    strcpy(stpcpy(fname, datadir), DIRSEP_S "gpg-conf" SKELEXT );
     src = fopen( fname, "r" );
     if (src && is_secured_file (fileno (src)))
       {
@@ -415,43 +402,35 @@ copy_options_file( const char *destdir )
 
 
 void
-try_make_homedir( const char *fname )
+try_make_homedir (const char *fname)
 {
-    const char *defhome = GNUPG_HOMEDIR;
+  const char *defhome = standard_homedir ();
 
-    /* Create the directory only if the supplied directory name
-     * is the same as the default one.  This way we avoid to create
-     * arbitrary directories when a non-default homedirectory is used.
-     * To cope with HOME, we do compare only the suffix if we see that
-     * the default homedir does start with a tilde.
-     */
-    if( opt.dry_run || opt.no_homedir_creation )
-	return;
+  /* Create the directory only if the supplied directory name is the
+     same as the default one.  This way we avoid to create arbitrary
+     directories when a non-default home directory is used.  To cope
+     with HOME, we do compare only the suffix if we see that the
+     default homedir does start with a tilde.  */
+  if ( opt.dry_run || opt.no_homedir_creation )
+    return;
 
-    if ( ( *defhome == '~'
-           && ( strlen(fname) >= strlen (defhome+1)
-                && !strcmp(fname+strlen(fname)-strlen(defhome+1),
-                           defhome+1 ) ))
-         || ( *defhome != '~'
-              && !compare_filenames( fname, defhome ) )
-        ) {
-	if( mkdir( fname, S_IRUSR|S_IWUSR|S_IXUSR ) )
-	    log_fatal( _("can't create directory `%s': %s\n"),
-					fname,	strerror(errno) );
-	else if( !opt.quiet )
-	    log_info( _("directory `%s' created\n"), fname );
-
-#ifdef __VMS
-       /* Explicitly remove group and world (other) access, which may
-          be allowed by default. */
-       if (chmod (fname, S_IRWXU ))
-         log_fatal ("can't set protection on directory `%s': %s\n",
-                    fname, strerror (errno));
-#endif /*def __VMS*/
-
-	copy_options_file( fname );
-/*  	log_info(_("you have to start GnuPG again, " */
-/*  		   "so it can read the new configuration file\n") ); */
-/*  	g10_exit(1); */
+  if (
+#ifdef HAVE_W32_SYSTEM
+      ( !compare_filenames (fname, defhome) )
+#else
+      ( *defhome == '~'
+        && (strlen(fname) >= strlen (defhome+1)
+            && !strcmp(fname+strlen(fname)-strlen(defhome+1), defhome+1 ) ))
+      || (*defhome != '~'  && !compare_filenames( fname, defhome ) )
+#endif
+      )
+    {
+      if ( mkdir (fname, S_IRUSR|S_IWUSR|S_IXUSR) )
+        log_fatal ( _("can't create directory `%s': %s\n"),
+                    fname, strerror(errno) );
+      else if (!opt.quiet )
+        log_info ( _("directory `%s' created\n"), fname );
+      copy_options_file( fname );
+      
     }
 }

@@ -22,8 +22,8 @@
 #include <stdio.h> /* Early versions of bzlib (1.0) require stdio.h */
 #include <bzlib.h>
 
+#include "gpg.h"
 #include "util.h"
-#include "memory.h"
 #include "packet.h"
 #include "filter.h"
 #include "main.h"
@@ -61,6 +61,7 @@ init_compress( compress_filter_context_t *zfx, bz_stream *bzs )
 static int
 do_compress(compress_filter_context_t *zfx, bz_stream *bzs, int flush, IOBUF a)
 {
+  int rc;
   int zrc;
   unsigned n;
 
@@ -84,10 +85,10 @@ do_compress(compress_filter_context_t *zfx, bz_stream *bzs, int flush, IOBUF a)
 		  (unsigned)bzs->avail_in, (unsigned)bzs->avail_out,
 		  (unsigned)n, zrc );
 
-      if( iobuf_write( a, zfx->outbuf, n ) )
+      if( (rc=iobuf_write( a, zfx->outbuf, n )) )
 	{
 	  log_debug("bzCompress: iobuf_write failed\n");
-	  return G10ERR_WRITE_FILE;
+	  return rc;
 	}
     }
   while( bzs->avail_in || (flush == BZ_FINISH && zrc != BZ_STREAM_END) );
@@ -159,7 +160,7 @@ do_uncompress( compress_filter_context_t *zfx, bz_stream *bzs,
                && !bzs->avail_in && bzs->avail_out > 0)
         {
           log_error ("unexpected EOF in bz2lib\n");
-          rc = G10ERR_READ_FILE;
+          rc = GPG_ERR_BAD_DATA;
           break;
         }
     }

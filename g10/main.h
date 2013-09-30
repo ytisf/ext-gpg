@@ -1,6 +1,6 @@
 /* main.h
  * Copyright (C) 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005, 2006, 2007,
- *               2008 Free Software Foundation, Inc.
+ *               2008, 2009 Free Software Foundation, Inc.
  *
  * This file is part of GnuPG.
  *
@@ -19,11 +19,13 @@
  */
 #ifndef G10_MAIN_H
 #define G10_MAIN_H
+
 #include "types.h"
 #include "iobuf.h"
-#include "mpi.h"
 #include "cipher.h"
 #include "keydb.h"
+#include "util.h"
+
 
 /* It could be argued that the default cipher should be 3DES rather
    than CAST5, and the default compression should be 0
@@ -49,7 +51,7 @@ typedef struct
 struct groupitem
 {
   char *name;
-  STRLIST values;
+  strlist_t values;
   struct groupitem *next;
 };
 
@@ -77,23 +79,27 @@ int  is_secured_file (int fd);
 int  is_secured_filename (const char *fname);
 u16 checksum_u16( unsigned n );
 u16 checksum( byte *p, unsigned n );
-u16 checksum_mpi( MPI a );
+u16 checksum_mpi( gcry_mpi_t a );
 u32 buffer_to_u32( const byte *buffer );
 const byte *get_session_marker( size_t *rlen );
+int map_cipher_openpgp_to_gcry (int algo);
+#define openpgp_cipher_open(_a,_b,_c,_d) gcry_cipher_open((_a),map_cipher_openpgp_to_gcry((_b)),(_c),(_d))
+#define openpgp_cipher_get_algo_keylen(_a) gcry_cipher_get_algo_keylen(map_cipher_openpgp_to_gcry((_a)))
+#define openpgp_cipher_get_algo_blklen(_a) gcry_cipher_get_algo_blklen(map_cipher_openpgp_to_gcry((_a)))
+int openpgp_cipher_blocklen (int algo);
 int openpgp_cipher_test_algo( int algo );
-int openpgp_pk_test_algo( int algo, unsigned int usage_flags );
+const char *openpgp_cipher_algo_name (int algo);
+int map_pk_openpgp_to_gcry (int algo);
+int openpgp_pk_test_algo( int algo );
+int openpgp_pk_test_algo2 ( int algo, unsigned int use );
 int openpgp_pk_algo_usage ( int algo );
 int openpgp_md_test_algo( int algo );
 
 #ifdef USE_IDEA
 void idea_cipher_warn( int show );
 #else
-#define idea_cipher_warn(a)
+#define idea_cipher_warn(a)  do { } while (0)
 #endif
-
-void md5_digest_warn (int show);
-
-void not_in_gpg1_notice (void);
 
 struct expando_args
 {
@@ -108,6 +114,11 @@ char *pct_expando(const char *string,struct expando_args *args);
 void deprecated_warning(const char *configname,unsigned int configlineno,
 			const char *option,const char *repl1,const char *repl2);
 void deprecated_command (const char *name);
+void obsolete_option (const char *configname, unsigned int configlineno,
+                      const char *name);
+
+int string_to_cipher_algo (const char *string);
+int string_to_digest_algo (const char *string);
 
 const char *compress_algo_to_string(int algo);
 int string_to_compress_algo(const char *string);
@@ -129,12 +140,44 @@ char *optsep(char **stringp);
 char *argsplit(char *string);
 int parse_options(char *str,unsigned int *options,
 		  struct parse_options *opts,int noisy);
-char *unescape_percent_string (const unsigned char *s);
 int has_invalid_email_chars (const char *s);
 int is_valid_mailbox (const char *name);
-char *default_homedir (void);
 const char *get_libexecdir (void);
 int path_access(const char *file,int mode);
+
+/* Temporary helpers. */
+int pubkey_get_npkey( int algo );
+int pubkey_get_nskey( int algo );
+int pubkey_get_nsig( int algo );
+int pubkey_get_nenc( int algo );
+unsigned int pubkey_nbits( int algo, gcry_mpi_t *pkey );
+int mpi_print( FILE *fp, gcry_mpi_t a, int mode );
+
+/*-- status.c --*/
+void set_status_fd ( int fd );
+int  is_status_enabled ( void );
+void write_status ( int no );
+void write_status_error (const char *where, int errcode);
+void write_status_text ( int no, const char *text );
+void write_status_buffer ( int no,
+                           const char *buffer, size_t len, int wrap );
+void write_status_text_and_buffer ( int no, const char *text,
+                                    const char *buffer, size_t len, int wrap );
+
+void write_status_begin_signing (gcry_md_hd_t md);
+
+
+int cpr_enabled(void);
+char *cpr_get( const char *keyword, const char *prompt );
+char *cpr_get_no_help( const char *keyword, const char *prompt );
+char *cpr_get_utf8( const char *keyword, const char *prompt );
+char *cpr_get_hidden( const char *keyword, const char *prompt );
+void cpr_kill_prompt(void);
+int  cpr_get_answer_is_yes( const char *keyword, const char *prompt );
+int  cpr_get_answer_yes_no_quit( const char *keyword, const char *prompt );
+int  cpr_get_answer_okay_cancel (const char *keyword,
+                                 const char *prompt,
+                                 int def_answer);
 
 /*-- helptext.c --*/
 void display_online_help( const char *keyword );
@@ -143,18 +186,18 @@ void display_online_help( const char *keyword );
 int setup_symkey(STRING2KEY **symkey_s2k,DEK **symkey_dek);
 int encode_symmetric( const char *filename );
 int encode_store( const char *filename );
-int encode_crypt( const char *filename, STRLIST remusr, int use_symkey );
-void encode_crypt_files(int nfiles, char **files, STRLIST remusr);
+int encode_crypt( const char *filename, strlist_t remusr, int use_symkey );
+void encode_crypt_files(int nfiles, char **files, strlist_t remusr);
 int encrypt_filter( void *opaque, int control,
-		    IOBUF a, byte *buf, size_t *ret_len);
+		    iobuf_t a, byte *buf, size_t *ret_len);
 
 
 /*-- sign.c --*/
-int complete_sig( PKT_signature *sig, PKT_secret_key *sk, MD_HANDLE md );
-int sign_file( STRLIST filenames, int detached, STRLIST locusr,
-	       int do_encrypt, STRLIST remusr, const char *outfile );
-int clearsign_file( const char *fname, STRLIST locusr, const char *outfile );
-int sign_symencrypt_file (const char *fname, STRLIST locusr);
+int complete_sig( PKT_signature *sig, PKT_secret_key *sk, gcry_md_hd_t md );
+int sign_file( strlist_t filenames, int detached, strlist_t locusr,
+	       int do_encrypt, strlist_t remusr, const char *outfile );
+int clearsign_file( const char *fname, strlist_t locusr, const char *outfile );
+int sign_symencrypt_file (const char *fname, strlist_t locusr);
 
 /*-- sig-check.c --*/
 int check_revocation_keys (PKT_public_key *pk, PKT_signature *sig);
@@ -166,16 +209,18 @@ int check_key_signature2( KBNODE root, KBNODE node, PKT_public_key *check_pk,
 			  u32 *r_expiredate, int *r_expired );
 
 /*-- delkey.c --*/
-int delete_keys( STRLIST names, int secret, int allow_both );
+int delete_keys( strlist_t names, int secret, int allow_both );
 
 /*-- keyedit.c --*/
-void keyedit_menu( const char *username, STRLIST locusr,
-		   STRLIST commands, int quiet, int seckey_check );
+void keyedit_menu( const char *username, strlist_t locusr,
+		   strlist_t commands, int quiet, int seckey_check );
+void keyedit_passwd (const char *username);
 void show_basic_key_info (KBNODE keyblock);
 
 /*-- keygen.c --*/
-u32 parse_expire_string(u32 timestamp,const char *string);
-u32 ask_expire_interval(u32 timestamp,int object,const char *def_expire);
+u32 parse_expire_string(const char *string);
+u32 ask_expire_interval(int object,const char *def_expire);
+u32 ask_expiredate(void);
 void generate_keypair( const char *fname, const char *card_serialno,
                        const char *backup_encryption_dir );
 int keygen_set_std_prefs (const char *string,int personal);
@@ -200,23 +245,21 @@ int save_unprotected_key_to_card (PKT_secret_key *sk, int keyno);
 int overwrite_filep( const char *fname );
 char *make_outfile_name( const char *iname );
 char *ask_outfile_name( const char *name, size_t namelen );
-int   open_outfile( const char *iname, int mode, IOBUF *a );
-IOBUF open_sigfile( const char *iname, progress_filter_context_t *pfx );
+int   open_outfile( const char *iname, int mode, iobuf_t *a );
+iobuf_t open_sigfile( const char *iname, progress_filter_context_t *pfx );
 void try_make_homedir( const char *fname );
 
 /*-- seskey.c --*/
 void make_session_key( DEK *dek );
-MPI encode_session_key( DEK *dek, unsigned nbits );
-MPI pkcs1_encode_md( MD_HANDLE md, int algo, size_t len, unsigned nbits,
-		     const byte *asn, size_t asnlen );
-MPI encode_md_value( PKT_public_key *pk, PKT_secret_key *sk,
-		     MD_HANDLE md, int hash_algo );
+gcry_mpi_t encode_session_key( DEK *dek, unsigned nbits );
+gcry_mpi_t encode_md_value( PKT_public_key *pk, PKT_secret_key *sk,
+                            gcry_md_hd_t md, int hash_algo );
 
 /*-- import.c --*/
 int parse_import_options(char *str,unsigned int *options,int noisy);
 void import_keys( char **fnames, int nnames,
 		  void *stats_hd, unsigned int options );
-int import_keys_stream( IOBUF inp,void *stats_hd,unsigned char **fpr,
+int import_keys_stream( iobuf_t inp,void *stats_hd,unsigned char **fpr,
 			size_t *fpr_len,unsigned int options );
 void *import_new_stats_handle (void);
 void import_release_stats_handle (void *p);
@@ -224,18 +267,18 @@ void import_print_stats (void *hd);
 
 int collapse_uids( KBNODE *keyblock );
 
-int auto_create_card_key_stub ( const char *serialnostr, 
+int auto_create_card_key_stub ( const char *serialnostr,
                                 const unsigned char *fpr1,
                                 const unsigned char *fpr2,
                                 const unsigned char *fpr3);
 
 /*-- export.c --*/
 int parse_export_options(char *str,unsigned int *options,int noisy);
-int export_pubkeys( STRLIST users, unsigned int options );
-int export_pubkeys_stream( IOBUF out, STRLIST users,
+int export_pubkeys( strlist_t users, unsigned int options );
+int export_pubkeys_stream( iobuf_t out, strlist_t users,
 			   KBNODE *keyblock_out, unsigned int options );
-int export_seckeys( STRLIST users );
-int export_secsubkeys( STRLIST users );
+int export_seckeys( strlist_t users );
+int export_secsubkeys( strlist_t users );
 
 /* dearmor.c --*/
 int dearmor_file( const char *fname );
@@ -244,15 +287,15 @@ int enarmor_file( const char *fname );
 /*-- revoke.c --*/
 struct revocation_reason_info;
 int gen_revoke( const char *uname );
-int gen_desig_revoke( const char *uname, STRLIST locusr);
+int gen_desig_revoke( const char *uname, strlist_t locusr);
 int revocation_reason_build_cb( PKT_signature *sig, void *opaque );
 struct revocation_reason_info *
 		ask_revocation_reason( int key_rev, int cert_rev, int hint );
 void release_revocation_reason_info( struct revocation_reason_info *reason );
 
 /*-- keylist.c --*/
-void public_key_list( STRLIST list );
-void secret_key_list( STRLIST list );
+void public_key_list( strlist_t list, int locate_mode );
+void secret_key_list( strlist_t list );
 void print_subpackets_colon(PKT_signature *sig);
 void reorder_keyblock (KBNODE keyblock);
 void list_keyblock( KBNODE keyblock, int secret, int fpr, void *opaque );
@@ -272,18 +315,18 @@ void print_card_key_info (FILE *fp, KBNODE keyblock);
 void print_file_status( int status, const char *name, int what );
 int verify_signatures( int nfiles, char **files );
 int verify_files( int nfiles, char **files );
+int gpg_verify (ctrl_t ctrl, int sig_fd, int data_fd, FILE *out_fp);
 
 /*-- decrypt.c --*/
 int decrypt_message( const char *filename );
 void decrypt_messages(int nfiles, char *files[]);
 
 /*-- plaintext.c --*/
-int hash_datafiles( MD_HANDLE md, MD_HANDLE md2,
-		    STRLIST files, const char *sigfilename, int textmode );
+int hash_datafiles( gcry_md_hd_t md, gcry_md_hd_t md2,
+		    strlist_t files, const char *sigfilename, int textmode );
+int hash_datafile_by_fd ( gcry_md_hd_t md, gcry_md_hd_t md2, int data_fd,
+                          int textmode );
 PKT_plaintext *setup_plaintext_name(const char *filename,IOBUF iobuf);
-
-/*-- pipemode.c --*/
-void run_in_pipemode (void);
 
 /*-- signal.c --*/
 void init_signals(void);
@@ -291,12 +334,14 @@ void pause_on_sigusr( int which );
 void block_all_signals(void);
 void unblock_all_signals(void);
 
+/*-- server.c --*/
+int gpg_server (ctrl_t);
 
 #ifdef ENABLE_CARD_SUPPORT
 /*-- card-util.c --*/
 void change_pin (int no, int allow_admin);
 void card_status (FILE *fp, char *serialno, size_t serialnobuflen);
-void card_edit (STRLIST commands);
+void card_edit (strlist_t commands);
 int  card_generate_subkey (KBNODE pub_keyblock, KBNODE sec_keyblock);
 int  card_store_subkey (KBNODE node, int use);
 #endif

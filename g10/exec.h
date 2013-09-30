@@ -22,7 +22,8 @@
 
 #include <unistd.h>
 #include <stdio.h>
-#include "iobuf.h"
+
+#include "../common/iobuf.h"
 
 struct exec_info
 {
@@ -37,7 +38,7 @@ struct exec_info
   } flags;
   pid_t child;
   FILE *tochild;
-  IOBUF fromchild;
+  iobuf_t fromchild;
   char *command,*name,*tempdir,*tempfile_in,*tempfile_out;
 };
 

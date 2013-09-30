@@ -29,10 +29,10 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "errors.h"
+#include "gpg.h"
+#include "status.h"
 #include "iobuf.h"
 #include "keydb.h"
-#include "memory.h"
 #include "util.h"
 #include "trustdb.h"
 #include "options.h"
@@ -67,20 +67,23 @@ write_record( TRUSTREC *rec )
 void
 list_trustdb( const char *username )
 {
-    TRUSTREC rec;
-
-    init_trustdb();
-    /* for now we ignore the user ID */
-    if (1) {
-	ulong recnum;
-	int i;
-
-	printf("TrustDB: %s\n", tdbio_get_dbname() );
-	for(i=9+strlen(tdbio_get_dbname()); i > 0; i-- )
-	    putchar('-');
-	putchar('\n');
-	for(recnum=0; !tdbio_read_record( recnum, &rec, 0); recnum++ )
-	    tdbio_dump_record( &rec, stdout );
+  TRUSTREC rec;
+  
+  (void)username;
+  
+  init_trustdb();
+  /* For now we ignore the user ID. */
+  if (1)
+    {
+      ulong recnum;
+      int i;
+      
+      printf("TrustDB: %s\n", tdbio_get_dbname() );
+      for(i=9+strlen(tdbio_get_dbname()); i > 0; i-- )
+        putchar('-');
+      putchar('\n');
+      for(recnum=0; !tdbio_read_record( recnum, &rec, 0); recnum++ )
+        tdbio_dump_record( &rec, stdout );
     }
 }
 

@@ -2,6 +2,11 @@
 		   ================================
 		   (Some notes on GNUPG internals.)
 
+      ************************************************************
+      *** Please see the file HACKING in the GIT master branch ***
+      ***            for up-to-date information.               ***
+      ************************************************************
+
 
 * No more ChangeLog files
 
@@ -26,36 +31,8 @@ ChangeLog lines, each with its leading TAB, will not exceed 80 columns.
 
 
 
-		   ===> Under construction <=======
 
-
-GIT Access
-==========
-
-The GIT repository is available at:
-
-  git clone git://git.gnupg.org/gnupg.git
-  git checkout STABLE-BRANCH-1-4
-
-You may want to subscribe to:
-
-    gnupg-commit-watchers@gnupg.org
-
-by sending a mail with subject "subscribe" to
-
-    gnupg-commit-watchers-request@gnupg.org
-
-
-You must run scripts/autogen.sh before doing the ./configure,
-as this creates some needed files not include in the repository.
-autogen.sh should check that you have all required tools installed.
-
-
-RSYNC access
-============
-The FTP archive is also available by anonymous rsync.  A daily snapshot
-of the CVS head revision is also available.  See rsync(1) and try
-"rsync ftp.gnupg.org::" to see available resources.
+===> What follows is probably out of date <===
 
 
 
@@ -77,48 +54,27 @@ RFCs
 
 2279  UTF-8, a transformation format of ISO 10646.
 
-4880  OpenPGP (replaces by 2440).
-
-
-
-Debug Flags
------------
-Use the option "--debug n" to output debug information. This option
-can be used multiple times, all values are ORed; n maybe prefixed with
-0x to use hex-values.
-
-     value  used for
-     -----  ----------------------------------------------
-      1     packet reading/writing
-      2     MPI details
-      4     ciphers and primes (may reveal sensitive data)
-      8     iobuf filter functions
-      16    iobuf stuff
-      32    memory allocation stuff
-      64    caching
-      128   show memory statistics at exit
-      256   trust verification stuff
-
+2440  OpenPGP.
 
 
 
 Directory Layout
 ----------------
-  ./		Readme, configure
-  ./scripts	Scripts needed by configure and others
-  ./doc 	Documentation
-  ./util	General purpose utility function
-  ./mpi 	Multi precision integer library
-  ./cipher	Cryptographic functions
-  ./g10 	GnuPG application
-  ./tools	Some helper and demo programs
-  ./keybox	The keybox library (under construction)
-  ./gcrypt	Stuff needed to build libgcrypt (under construction)
+  ./	       Readme, configure
+  ./agent      Gpg-agent and related tools
+  ./doc        Documentation
+  ./doc        Documentation
+  ./g10        Gpg program here called gpg2
+  ./jnlib      Utility functions
+  ./kbx        Keybox library
+  ./scd        Smartcard daemon
+  ./scripts    Scripts needed by configure and others
+  ./sm         Gpgsm program
 
 
 Detailed Roadmap
 ----------------
-g10/g10.c	Main module with option parsing and all the stuff you have
+g10/gpg.c	Main module with option parsing and all the stuff you have
 		to do on startup.  Also has the exout handler and some
 		helper functions.
 g10/sign.c      Create signature and optionally encrypt
@@ -191,17 +147,28 @@ Memory allocation
 -----------------
 Use only the functions:
 
-    m_alloc()
-    m_alloc_clear()
-    m_strdup()
-    m_free()
+    xmalloc
+    xmalloc_secure
+    xtrymalloc
+    xtrymalloc_secure
+    xcalloc
+    xcalloc_secure
+    xtrycalloc
+    xtrycalloc_secure
+    xrealloc
+    xtryrealloc
+    xstrdup
+    xtrystrdup
+    xfree
 
-If you want to store a passphrase or some other sensitive data you may
-want to use m_alloc_secure() instead of m_alloc(), as this puts the data
-into a memory region which is protected from swapping (on some platforms).
-m_free() works for both.  This functions will not return if there is not
-enough memory available.
 
+The *secure versions allocated memory in the secure memory. That is,
+swapping out of this memory is avoided and is gets overwritten on
+free.  Use this for passphrases, session keys and other sensitive
+material.  This memory set aside for secure memory is linited to a few
+k.  In general the function don't print a memeory message and
+terminate the process if there is not enough memory available.  The
+"try" versions of the functions return NULL instead.
 
 
 Logging
@@ -235,70 +202,5 @@ enciphered packet, plaintext packets and so on.  The file g10/encode.c
 might be a good staring point to see how it is used  - actually this is
 the other way: constructing messages using pushed filters but it may be
 easier to understand.
-
-
-How to use the message digest functions
----------------------------------------
-cipher/md.c implements an interface to hash (message digest functions).
-
-a) If you have a common part of data and some variable parts
-   and you need to hash of the concatenated parts, you can use this:
-	md = md_open(...)
-	md_write( md,  common_part )
-	md1 = md_copy( md )
-	md_write(md1, part1)
-	md_final(md1);
-	digest1 = md_read(md1)
-	md2 = md_copy( md )
-	md_write(md2, part2)
-	md_final(md2);
-	digest2 = md_read(md2)
-
-   An example are key signatures; the key packet is the common part
-   and the user-id packets are the variable parts.
-
-b) If you need a running digest you should use this:
-	md = md_open(...)
-	md_write( md, part1 )
-	digest_of_part1 = md_digest( md );
-	md_write( md, part2 )
-	digest_of_part1_cat_part2 = md_digest( md );
-	....
-
-Both methods may be combined. [Please see the source for the real syntax]
-
-
-
-
-How to use the cipher functions
--------------------------------
-cipher/cipher.c implements the interface to symmetric encryption functions.
-As usual you have a function to open a cipher (which returns a handle to be used
-with all other functions), some functions to set the key and other stuff and
-a encrypt and decrypt function which does the real work.  You probably know
-how to work with files - so it should really be easy to work with these
-functions.  Here is an example:
-
-    CIPHER_HANDLE hd;
-
-    hd = cipher_open( CIPHER_ALGO_TWOFISH, CIPHER_MODE_CFB, 0 );
-    if( !hd )
-	oops( use other function to check for the real error );
-    rc = cipher_setkey( hd, key256bit, 32 ) )
-    if( rc )
-	oops( weak key or something like this );
-    cipher_setiv( hd, some_IV_or_NULL_for_all_zeroes );
-    cipher_encrypt( hd, plain, cipher, size );
-    cipher_close( hd );
-
-
-
-How to use the public key functions
------------------------------------
-cipher/pubkey.c implements the interface to asymmetric encryption and
-signature functions. This is basically the same as with the symmetric
-counterparts, but due to their nature it is a little bit more complicated.
-
-   [Give an example]
 
 

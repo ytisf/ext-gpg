@@ -1,4 +1,4 @@
-/* armor.c - Armor flter
+/* armor.c - Armor filter
  * Copyright (C) 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005, 2006,
  *               2007 Free Software Foundation, Inc.
  *
@@ -26,9 +26,9 @@
 #include <assert.h>
 #include <ctype.h>
 
-#include "errors.h"
+#include "gpg.h"
+#include "status.h"
 #include "iobuf.h"
-#include "memory.h"
 #include "util.h"
 #include "filter.h"
 #include "packet.h"
@@ -112,6 +112,12 @@ static char *tail_strings[] = {
 };
 
 
+static int armor_filter ( void *opaque, int control,
+                          iobuf_t chain, byte *buf, size_t *ret_len);
+
+
+
+
 /* Create a new context for armor filters.  */
 armor_filter_context_t *
 new_armor_context (void)
@@ -131,14 +137,7 @@ release_armor_context (armor_filter_context_t *afx)
 {
   if (!afx)
     return;
-
-  /* In contrast to 2.0, we use in 1.4 heap based contexts only in a
-     very few places and in general keep the stack based contexts.  A
-     REFCOUNT of 0 indicates a stack based context and thus we don't
-     do anything in this case. */
-  if (!afx->refcount)
-    return;
-
+  assert (afx->refcount);
   if ( --afx->refcount )
     return;
   xfree (afx);
@@ -150,9 +149,6 @@ push_armor_filter (armor_filter_context_t *afx, iobuf_t iobuf)
 {
   int rc; 
 
-  if (!afx->refcount)
-    return iobuf_push_filter (iobuf, armor_filter, afx);
-    
   afx->refcount++;
   rc = iobuf_push_filter (iobuf, armor_filter, afx);
   if (rc)
@@ -399,7 +395,7 @@ parse_header_line( armor_filter_context_t *afx, byte *line, unsigned int len )
     int hashes=0;
     unsigned int len2;
 
-    len2 = check_trailing_ws( line, len );
+    len2 = length_sans_trailing_ws ( line, len );
     if( !len2 ) {
         afx->buffer_pos = len2;  /* (it is not the fine way to do it here) */
 	return 0; /* WS only: same as empty line */
@@ -510,7 +506,7 @@ check_input( armor_filter_context_t *afx, IOBUF a )
 	    if( hdr_line == BEGIN_SIGNED_MSG_IDX ) {
 		if( afx->in_cleartext ) {
 		    log_error(_("nested clear text signatures\n"));
-		    rc = G10ERR_INVALID_ARMOR;
+		    rc = gpg_error (GPG_ERR_INV_ARMOR);
 		}
 		afx->in_cleartext = 1;
 	    }
@@ -741,10 +737,10 @@ fake_packet( armor_filter_context_t *afx, IOBUF a,
 static int
 invalid_crc(void)
 {
-    if ( opt.ignore_crc_error )
-        return 0;
-    log_inc_errorcount();
-    return G10ERR_INVALID_ARMOR;
+  if ( opt.ignore_crc_error )
+    return 0;
+  log_inc_errorcount();
+  return gpg_error (GPG_ERR_INV_ARMOR);
 }
 
 
@@ -775,14 +771,14 @@ radix64_read( armor_filter_context_t *afx, IOBUF a, size_t *retn,
 	    if( !maxlen )
 		afx->truncated++;
 	    if( !afx->buffer_len )
-                break; /* eof */
+		break; /* eof */
 	    continue;
 	}
 
       again:
 	if( c == '\n' || c == ' ' || c == '\r' || c == '\t' )
 	    continue;
-	else if( c == '=' ) { /* Pad character: stop or CRC sum starts. */
+	else if( c == '=' ) { /* pad character: stop */
 	    /* some mailers leave quoted-printable encoded characters
 	     * so we try to workaround this */
 	    if( afx->buffer_pos+2 < afx->buffer_len ) {
@@ -801,7 +797,7 @@ radix64_read( armor_filter_context_t *afx, IOBUF a, size_t *retn,
 		    goto again;
 		}
 	    }
-            
+
 	    if (!n)
 	      onlypad = 1;
 
@@ -942,7 +938,7 @@ radix64_read( armor_filter_context_t *afx, IOBUF a, size_t *retn,
 /****************
  * This filter is used to handle the armor stuff
  */
-int
+static int
 armor_filter( void *opaque, int control,
 	     IOBUF a, byte *buf, size_t *ret_len)
 {
@@ -1072,7 +1068,7 @@ armor_filter( void *opaque, int control,
     else if( control == IOBUFCTRL_FLUSH && !afx->cancel ) {
 	if( !afx->status ) { /* write the header line */
 	    const char *s;
-	    STRLIST comment=opt.comments;
+	    strlist_t comment=opt.comments;
 
 	    if( afx->what >= DIM(head_strings) )
 		log_bug("afx->what=%d", afx->what);

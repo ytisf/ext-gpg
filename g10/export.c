@@ -25,11 +25,11 @@
 #include <errno.h>
 #include <assert.h>
 
+#include "gpg.h"
 #include "options.h"
 #include "packet.h"
-#include "errors.h"
+#include "status.h"
 #include "keydb.h"
-#include "memory.h"
 #include "util.h"
 #include "main.h"
 #include "i18n.h"
@@ -45,10 +45,12 @@ struct subkey_list_s
 typedef struct subkey_list_s *subkey_list_t;
 
 
-static int do_export( STRLIST users, int secret, unsigned int options );
-static int do_export_stream( IOBUF out, STRLIST users, int secret,
+static int do_export( strlist_t users, int secret, unsigned int options );
+static int do_export_stream( IOBUF out, strlist_t users, int secret,
 			     KBNODE *keyblock_out, unsigned int options,
 			     int *any );
+static int build_sexp (iobuf_t out, PACKET *pkt, int *indent);
+
 
 int
 parse_export_options(char *str,unsigned int *options,int noisy)
@@ -67,6 +69,8 @@ parse_export_options(char *str,unsigned int *options,int noisy)
        N_("remove unusable parts from key during export")},
       {"export-minimal",EXPORT_MINIMAL|EXPORT_CLEAN,NULL,
        N_("remove as much as possible from key during export")},
+      {"export-sexp-format",EXPORT_SEXP_FORMAT, NULL,
+       N_("export keys in an S-expression based format")},
       /* Aliases for backward compatibility */
       {"include-local-sigs",EXPORT_LOCAL_SIGS,NULL,NULL},
       {"include-attributes",EXPORT_ATTRIBUTES,NULL,NULL},
@@ -89,7 +93,7 @@ parse_export_options(char *str,unsigned int *options,int noisy)
  * options are defined in main.h.
  * If USERS is NULL, the complete ring will be exported.  */
 int
-export_pubkeys( STRLIST users, unsigned int options )
+export_pubkeys( strlist_t users, unsigned int options )
 {
     return do_export( users, 0, options );
 }
@@ -99,7 +103,7 @@ export_pubkeys( STRLIST users, unsigned int options )
  * been exported
  */
 int
-export_pubkeys_stream( IOBUF out, STRLIST users,
+export_pubkeys_stream( IOBUF out, strlist_t users,
 		       KBNODE *keyblock_out, unsigned int options )
 {
     int any, rc;
@@ -111,45 +115,55 @@ export_pubkeys_stream( IOBUF out, STRLIST users,
 }
 
 int
-export_seckeys( STRLIST users )
+export_seckeys( strlist_t users )
 {
-    return do_export( users, 1, 0 );
+  /* Use only relevant options for the secret key. */
+  unsigned int options = (opt.export_options & EXPORT_SEXP_FORMAT);
+  return do_export( users, 1, options );
 }
 
 int
-export_secsubkeys( STRLIST users )
+export_secsubkeys( strlist_t users )
 {
-    return do_export( users, 2, 0 );
+  /* Use only relevant options for the secret key. */
+  unsigned int options = (opt.export_options & EXPORT_SEXP_FORMAT);
+  return do_export( users, 2, options );
 }
 
 static int
-do_export( STRLIST users, int secret, unsigned int options )
+do_export( strlist_t users, int secret, unsigned int options )
 {
-    IOBUF out = NULL;
-    int any, rc;
-    armor_filter_context_t afx;
-    compress_filter_context_t zfx;
-
-    memset( &afx, 0, sizeof afx);
-    memset( &zfx, 0, sizeof zfx);
-
-    rc = open_outfile( NULL, 0, &out );
-    if( rc )
-	return rc;
-
-    if( opt.armor ) {
-	afx.what = secret?5:1;
-	iobuf_push_filter( out, armor_filter, &afx );
-    }
-    if( opt.compress_keys )
-      push_compress_filter(out,&zfx,default_compress_algo());
-
-    rc = do_export_stream( out, users, secret, NULL, options, &any );
-    if( rc || !any )
-	iobuf_cancel(out);
-    else
-	iobuf_close(out);
+  IOBUF out = NULL;
+  int any, rc;
+  armor_filter_context_t *afx = NULL;
+  compress_filter_context_t zfx;
+  
+  memset( &zfx, 0, sizeof zfx);
+  
+  rc = open_outfile( NULL, 0, &out );
+  if (rc)
     return rc;
+
+  if (!(options & EXPORT_SEXP_FORMAT))
+    {
+      if ( opt.armor )
+        {
+          afx = new_armor_context ();
+          afx->what = secret? 5 : 1;
+          push_armor_filter (afx, out);
+        }
+      if ( opt.compress_keys )
+        push_compress_filter (out,&zfx,default_compress_algo());
+    }
+
+  rc = do_export_stream ( out, users, secret, NULL, options, &any );
+
+  if ( rc || !any )
+    iobuf_cancel (out);
+  else
+    iobuf_close (out);
+  release_armor_context (afx);
+  return rc;
 }
 
 
@@ -275,7 +289,7 @@ exact_subkey_match_p (KEYDB_SEARCH_DESC *desc, KBNODE node)
    contains a pointer to the first keyblock found and exported.  No
    other keyblocks are exported.  The caller must free it. */
 static int
-do_export_stream( IOBUF out, STRLIST users, int secret,
+do_export_stream( IOBUF out, strlist_t users, int secret,
 		  KBNODE *keyblock_out, unsigned int options, int *any )
 {
     int rc = 0;
@@ -286,7 +300,8 @@ do_export_stream( IOBUF out, STRLIST users, int secret,
     KEYDB_SEARCH_DESC *desc = NULL;
     subkey_list_t subkey_list = NULL;  /* Track alreay processed subkeys. */
     KEYDB_HANDLE kdbhd;
-    STRLIST sl;
+    strlist_t sl;
+    int indent = 0;
 
     *any = 0;
     init_packet( &pkt );
@@ -500,7 +515,10 @@ do_export_stream( IOBUF out, STRLIST users, int secret,
 		 */
 		int save_mode = node->pkt->pkt.secret_key->protect.s2k.mode;
 		node->pkt->pkt.secret_key->protect.s2k.mode = 1001;
-		rc = build_packet( out, node->pkt );
+                if ((options&EXPORT_SEXP_FORMAT))
+                  rc = build_sexp (out, node->pkt, &indent);
+                else
+                  rc = build_packet (out, node->pkt);
 		node->pkt->pkt.secret_key->protect.s2k.mode = save_mode;
 	      }
 	    else if (secret == 2 && node->pkt->pkttype == PKT_SECRET_SUBKEY
@@ -544,7 +562,10 @@ do_export_stream( IOBUF out, STRLIST users, int secret,
                     goto leave;
                   }
 
-		rc = build_packet (out, node->pkt);
+                if ((options&EXPORT_SEXP_FORMAT))
+                  rc = build_sexp (out, node->pkt, &indent);
+                else
+                  rc = build_packet (out, node->pkt);
 
                 node->pkt->pkt.secret_key = sk_save;
                 free_secret_key (sk);
@@ -566,16 +587,26 @@ do_export_stream( IOBUF out, STRLIST users, int secret,
 		    sha1_warned=1;
 		  }
 
-		rc = build_packet( out, node->pkt );
+                if ((options&EXPORT_SEXP_FORMAT))
+                  rc = build_sexp (out, node->pkt, &indent);
+                else
+                  rc = build_packet (out, node->pkt);
 	      }
 
 	    if( rc ) {
 		log_error("build_packet(%d) failed: %s\n",
 			    node->pkt->pkttype, g10_errstr(rc) );
-		rc = G10ERR_WRITE_FILE;
 		goto leave;
 	    }
 	}
+
+        if ((options&EXPORT_SEXP_FORMAT) && indent)
+          {
+            for (; indent; indent--)
+              iobuf_put (out, ')');
+            iobuf_put (out, '\n');
+          }
+
 	++*any;
 	if(keyblock_out)
 	  {
@@ -583,6 +614,12 @@ do_export_stream( IOBUF out, STRLIST users, int secret,
 	    break;
 	  }
     }
+    if ((options&EXPORT_SEXP_FORMAT) && indent)
+      {
+        for (; indent; indent--)
+          iobuf_put (out, ')');
+        iobuf_put (out, '\n');
+      }
     if( rc == -1 )
 	rc = 0;
 
@@ -596,3 +633,124 @@ do_export_stream( IOBUF out, STRLIST users, int secret,
 	log_info(_("WARNING: nothing exported\n"));
     return rc;
 }
+
+
+
+static int
+write_sexp_line (iobuf_t out, int *indent, const char *text)
+{
+  int i;
+
+  for (i=0; i < *indent; i++)
+    iobuf_put (out, ' ');
+  iobuf_writestr (out, text);
+  return 0;
+}
+
+static int
+write_sexp_keyparm (iobuf_t out, int *indent, const char *name, gcry_mpi_t a)
+{
+  int rc;
+  unsigned char *buffer;
+
+  write_sexp_line (out, indent, "(");
+  iobuf_writestr (out, name);
+  iobuf_writestr (out, " #");
+
+  rc = gcry_mpi_aprint (GCRYMPI_FMT_HEX, &buffer, NULL, a);
+  assert (!rc);
+  iobuf_writestr (out, buffer);
+  iobuf_writestr (out, "#)");
+  gcry_free (buffer);
+  return 0;
+}
+
+static int
+build_sexp_seckey (iobuf_t out, PACKET *pkt, int *indent)
+{
+  PKT_secret_key *sk = pkt->pkt.secret_key;
+  char tmpbuf[100];
+
+  if (pkt->pkttype == PKT_SECRET_KEY)
+    {
+      iobuf_writestr (out, "(openpgp-key\n");
+      (*indent)++;
+    }
+  else
+    {
+      iobuf_writestr (out, " (subkey\n");
+      (*indent)++;
+    }
+  (*indent)++;
+  write_sexp_line (out, indent, "(private-key\n");
+  (*indent)++;
+  if (is_RSA (sk->pubkey_algo) && !sk->is_protected)
+    {
+      write_sexp_line (out, indent, "(rsa\n");
+      (*indent)++;
+      write_sexp_keyparm (out, indent, "n", sk->skey[0]); iobuf_put (out,'\n');
+      write_sexp_keyparm (out, indent, "e", sk->skey[1]); iobuf_put (out,'\n');
+      write_sexp_keyparm (out, indent, "d", sk->skey[2]); iobuf_put (out,'\n');
+      write_sexp_keyparm (out, indent, "p", sk->skey[3]); iobuf_put (out,'\n');
+      write_sexp_keyparm (out, indent, "q", sk->skey[4]); iobuf_put (out,'\n');
+      write_sexp_keyparm (out, indent, "u", sk->skey[5]); 
+      iobuf_put (out,')'); iobuf_put (out,'\n');
+      (*indent)--;
+    }
+  else if (sk->pubkey_algo == PUBKEY_ALGO_DSA && !sk->is_protected)
+    {
+      write_sexp_line (out, indent, "(dsa\n");
+      (*indent)++;
+      write_sexp_keyparm (out, indent, "p", sk->skey[0]); iobuf_put (out,'\n');
+      write_sexp_keyparm (out, indent, "q", sk->skey[1]); iobuf_put (out,'\n');
+      write_sexp_keyparm (out, indent, "g", sk->skey[2]); iobuf_put (out,'\n');
+      write_sexp_keyparm (out, indent, "y", sk->skey[3]); iobuf_put (out,'\n');
+      write_sexp_keyparm (out, indent, "x", sk->skey[4]);
+      iobuf_put (out,')'); iobuf_put (out,'\n');
+      (*indent)--;
+    }
+  else if (is_ELGAMAL (sk->pubkey_algo) && !sk->is_protected)
+    {
+      write_sexp_line (out, indent, "(elg\n");
+      (*indent)++;
+      write_sexp_keyparm (out, indent, "p", sk->skey[0]); iobuf_put (out,'\n');
+      write_sexp_keyparm (out, indent, "g", sk->skey[2]); iobuf_put (out,'\n');
+      write_sexp_keyparm (out, indent, "y", sk->skey[3]); iobuf_put (out,'\n');
+      write_sexp_keyparm (out, indent, "x", sk->skey[4]);
+      iobuf_put (out,')'); iobuf_put (out,'\n');
+      (*indent)--;
+    }
+  write_sexp_line (out, indent,  "(attrib\n"); (*indent)++;
+  sprintf (tmpbuf, "(created \"%lu\"", (unsigned long)sk->timestamp);
+  write_sexp_line (out, indent, tmpbuf);
+  iobuf_put (out,')'); (*indent)--; /* close created */
+  iobuf_put (out,')'); (*indent)--; /* close attrib */
+  iobuf_put (out,')'); (*indent)--; /* close private-key */
+  if (pkt->pkttype != PKT_SECRET_KEY)
+    iobuf_put (out,')'), (*indent)--; /* close subkey */
+  iobuf_put (out,'\n');
+
+  return 0;
+}
+
+
+/* For some packet types we write them in a S-expression format.  This
+   is still EXPERIMENTAL and subject to change.  */
+static int 
+build_sexp (iobuf_t out, PACKET *pkt, int *indent)
+{
+  int rc;
+
+  switch (pkt->pkttype)
+    {
+    case PKT_SECRET_KEY:
+    case PKT_SECRET_SUBKEY:
+      rc = build_sexp_seckey (out, pkt, indent);
+      break;
+    default:
+      rc = 0;
+      break;
+    }
+  return rc;
+}
+

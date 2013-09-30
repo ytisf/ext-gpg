@@ -1,6 +1,6 @@
 /* keyid.c - key ID and fingerprint handling
  * Copyright (C) 1998, 1999, 2000, 2001, 2003,
- *               2004 Free Software Foundation, Inc.
+ *               2004, 2006 Free Software Foundation, Inc.
  *
  * This file is part of GnuPG.
  *
@@ -25,21 +25,15 @@
 #include <errno.h>
 #include <time.h>
 #include <assert.h>
+
+#include "gpg.h"
 #include "util.h"
 #include "main.h"
 #include "packet.h"
 #include "options.h"
-#include "mpi.h"
 #include "keydb.h"
 #include "i18n.h"
-
-#ifdef HAVE_UNSIGNED_TIME_T
-# define INVALID_TIME_CHECK(a) ((a) == (time_t)(-1))
-#else
-  /* Error or 32 bit time_t and value after 2038-01-19.  */
-# define INVALID_TIME_CHECK(a) ((a) < 0)
-#endif
-
+#include "rmd160.h"
 
 int
 pubkey_letter( int algo )
@@ -60,42 +54,50 @@ pubkey_letter( int algo )
 /* This function is useful for v4 fingerprints and v3 or v4 key
    signing. */
 void
-hash_public_key( MD_HANDLE md, PKT_public_key *pk )
+hash_public_key( gcry_md_hd_t md, PKT_public_key *pk )
 {
-  unsigned n=6;
-  unsigned nb[PUBKEY_MAX_NPKEY];
-  unsigned nn[PUBKEY_MAX_NPKEY];
+  unsigned int n = 6;
+  unsigned int nn[PUBKEY_MAX_NPKEY];
   byte *pp[PUBKEY_MAX_NPKEY];
   int i;
-  int npkey = pubkey_get_npkey( pk->pubkey_algo );
+  unsigned int nbits;
+  size_t nbytes;
+  int npkey = pubkey_get_npkey (pk->pubkey_algo);
 
   /* Two extra bytes for the expiration date in v3 */
   if(pk->version<4)
     n+=2;
 
-  if(npkey==0 && pk->pkey[0] && mpi_is_opaque(pk->pkey[0]))
+  if (npkey==0 && pk->pkey[0]
+      && gcry_mpi_get_flag (pk->pkey[0], GCRYMPI_FLAG_OPAQUE))
     {
-      pp[0]=mpi_get_opaque(pk->pkey[0],&nn[0]);
+      pp[0] = gcry_mpi_get_opaque (pk->pkey[0], &nbits);
+      nn[0] = (nbits+7)/8;
       n+=nn[0];
     }
   else
     for(i=0; i < npkey; i++ )
       {
-	nb[i] = mpi_get_nbits(pk->pkey[i]);
-	pp[i] = mpi_get_buffer( pk->pkey[i], nn+i, NULL );
-	n += 2 + nn[i];
+	if (gcry_mpi_print (GCRYMPI_FMT_PGP, NULL, 0, &nbytes, pk->pkey[i]))
+          BUG ();
+	pp[i] = xmalloc (nbytes);
+	if (gcry_mpi_print (GCRYMPI_FMT_PGP, pp[i], nbytes,
+                            &nbytes, pk->pkey[i]))
+          BUG ();
+        nn[i] = nbytes;
+	n += nn[i];
       }
 
-  md_putc( md, 0x99 );     /* ctb */
+  gcry_md_putc ( md, 0x99 );     /* ctb */
   /* What does it mean if n is greater than than 0xFFFF ? */
-  md_putc( md, n >> 8 );   /* 2 byte length header */
-  md_putc( md, n );
-  md_putc( md, pk->version );
+  gcry_md_putc ( md, n >> 8 );   /* 2 byte length header */
+  gcry_md_putc ( md, n );
+  gcry_md_putc ( md, pk->version );
 
-  md_putc( md, pk->timestamp >> 24 );
-  md_putc( md, pk->timestamp >> 16 );
-  md_putc( md, pk->timestamp >>  8 );
-  md_putc( md, pk->timestamp       );
+  gcry_md_putc ( md, pk->timestamp >> 24 );
+  gcry_md_putc ( md, pk->timestamp >> 16 );
+  gcry_md_putc ( md, pk->timestamp >>  8 );
+  gcry_md_putc ( md, pk->timestamp       );
 
   if(pk->version<4)
     {
@@ -103,37 +105,39 @@ hash_public_key( MD_HANDLE md, PKT_public_key *pk )
       if(pk->expiredate)
 	days=(u16)((pk->expiredate - pk->timestamp) / 86400L);
 
-      md_putc( md, days >> 8 );
-      md_putc( md, days );
+      gcry_md_putc ( md, days >> 8 );
+      gcry_md_putc ( md, days );
     }
 
-  md_putc( md, pk->pubkey_algo );
+  gcry_md_putc ( md, pk->pubkey_algo );
 
-  if(npkey==0 && pk->pkey[0] && mpi_is_opaque(pk->pkey[0]))
-    md_write(md,pp[0],nn[0]);
+  if(npkey==0 && pk->pkey[0]
+     && gcry_mpi_get_flag (pk->pkey[0], GCRYMPI_FLAG_OPAQUE))
+    {
+      gcry_md_write (md, pp[0], nn[0]);
+    }
   else
     for(i=0; i < npkey; i++ )
       {
-	md_putc( md, nb[i]>>8);
-	md_putc( md, nb[i] );
-	md_write( md, pp[i], nn[i] );
+	gcry_md_write ( md, pp[i], nn[i] );
 	xfree(pp[i]);
       }
 }
 
-static MD_HANDLE
+static gcry_md_hd_t
 do_fingerprint_md( PKT_public_key *pk )
 {
-  MD_HANDLE md;
+  gcry_md_hd_t md;
 
-  md = md_open( DIGEST_ALGO_SHA1, 0);
+  if (gcry_md_open (&md, DIGEST_ALGO_SHA1, 0))
+    BUG ();
   hash_public_key(md,pk);
-  md_final( md );
+  gcry_md_final( md );
 
   return md;
 }
 
-static MD_HANDLE
+static gcry_md_hd_t
 do_fingerprint_md_sk( PKT_secret_key *sk )
 {
     PKT_public_key pk;
@@ -152,6 +156,33 @@ do_fingerprint_md_sk( PKT_secret_key *sk )
       pk.pkey[i] = sk->skey[i];
     return do_fingerprint_md( &pk );
 }
+
+
+u32
+v3_keyid (gcry_mpi_t a, u32 *ki)
+{
+  byte *buffer, *p;
+  size_t nbytes;
+
+  if (gcry_mpi_print (GCRYMPI_FMT_USG, NULL, 0, &nbytes, a ))
+    BUG ();
+  /* fixme: allocate it on the stack */
+  buffer = xmalloc (nbytes);
+  if (gcry_mpi_print( GCRYMPI_FMT_USG, buffer, nbytes, NULL, a ))
+    BUG ();
+  if (nbytes < 8) /* oops */
+    ki[0] = ki[1] = 0;
+  else
+    {
+      p = buffer + nbytes - 8;
+      ki[0] = (p[0] << 24) | (p[1] <<16) | (p[2] << 8) | p[3];
+      p += 4;
+      ki[1] = (p[0] << 24) | (p[1] <<16) | (p[2] << 8) | p[3];
+    }
+  xfree (buffer);
+  return ki[1];
+}
+
 
 size_t
 keystrlen(void)
@@ -240,14 +271,14 @@ keystr_from_desc(KEYDB_SEARCH_DESC *desc)
       {
 	u32 keyid[2];
 
-	keyid[0] = (unsigned char)desc->u.fpr[12] << 24
-	  | (unsigned char)desc->u.fpr[13] << 16
-	  | (unsigned char)desc->u.fpr[14] << 8
-	  | (unsigned char)desc->u.fpr[15] ;
-	keyid[1] = (unsigned char)desc->u.fpr[16] << 24
-	  | (unsigned char)desc->u.fpr[17] << 16
-	  | (unsigned char)desc->u.fpr[18] << 8
-	  | (unsigned char)desc->u.fpr[19] ;
+	keyid[0] = ((unsigned char)desc->u.fpr[12] << 24
+                    | (unsigned char)desc->u.fpr[13] << 16
+                    | (unsigned char)desc->u.fpr[14] << 8
+                    | (unsigned char)desc->u.fpr[15]);
+	keyid[1] = ((unsigned char)desc->u.fpr[16] << 24
+                    | (unsigned char)desc->u.fpr[17] << 16
+                    | (unsigned char)desc->u.fpr[18] << 8
+                    | (unsigned char)desc->u.fpr[19]);
 
 	return keystr(keyid);
       }
@@ -283,8 +314,8 @@ keyid_from_sk( PKT_secret_key *sk, u32 *keyid )
     {
       if( is_RSA(sk->pubkey_algo) )
 	{
-	  lowbits = pubkey_get_npkey(sk->pubkey_algo) ?
-	    mpi_get_keyid( sk->skey[0], keyid ) : 0; /* take n */
+	  lowbits = (pubkey_get_npkey (sk->pubkey_algo) ?
+                     v3_keyid( sk->skey[0], keyid ) : 0); /* Take n. */
 	  sk->keyid[0]=keyid[0];
 	  sk->keyid[1]=keyid[1];
 	}
@@ -294,15 +325,16 @@ keyid_from_sk( PKT_secret_key *sk, u32 *keyid )
   else
     {
       const byte *dp;
-      MD_HANDLE md;
+      gcry_md_hd_t md;
+
       md = do_fingerprint_md_sk(sk);
       if(md)
 	{
-	  dp = md_read( md, 0 );
+	  dp = gcry_md_read (md, 0);
 	  keyid[0] = dp[12] << 24 | dp[13] << 16 | dp[14] << 8 | dp[15] ;
 	  keyid[1] = dp[16] << 24 | dp[17] << 16 | dp[18] << 8 | dp[19] ;
 	  lowbits = keyid[1];
-	  md_close(md);
+	  gcry_md_close (md);
 	  sk->keyid[0] = keyid[0];
 	  sk->keyid[1] = keyid[1];
 	}
@@ -337,8 +369,8 @@ keyid_from_pk( PKT_public_key *pk, u32 *keyid )
     {
       if( is_RSA(pk->pubkey_algo) )
 	{
-	  lowbits = pubkey_get_npkey(pk->pubkey_algo) ?
-	    mpi_get_keyid( pk->pkey[0], keyid ) : 0 ; /* from n */
+	  lowbits = (pubkey_get_npkey (pk->pubkey_algo) ?
+                     v3_keyid ( pk->pkey[0], keyid ) : 0); /* From n. */
 	  pk->keyid[0] = keyid[0];
 	  pk->keyid[1] = keyid[1];
 	}
@@ -348,15 +380,16 @@ keyid_from_pk( PKT_public_key *pk, u32 *keyid )
   else
     {
       const byte *dp;
-      MD_HANDLE md;
+      gcry_md_hd_t md;
+
       md = do_fingerprint_md(pk);
       if(md)
 	{
-	  dp = md_read( md, 0 );
+	  dp = gcry_md_read ( md, 0 );
 	  keyid[0] = dp[12] << 24 | dp[13] << 16 | dp[14] << 8 | dp[15] ;
 	  keyid[1] = dp[16] << 24 | dp[17] << 16 | dp[18] << 8 | dp[19] ;
 	  lowbits = keyid[1];
-	  md_close(md);
+	  gcry_md_close (md);
 	  pk->keyid[0] = keyid[0];
 	  pk->keyid[1] = keyid[1];
 	}
@@ -418,14 +451,14 @@ keyid_from_sig( PKT_signature *sig, u32 *keyid )
 byte *
 namehash_from_uid(PKT_user_id *uid)
 {
-  if(uid->namehash==NULL)
+  if (!uid->namehash)
     {
-      uid->namehash=xmalloc(20);
+      uid->namehash = xmalloc (20);
 
       if(uid->attrib_data)
-	rmd160_hash_buffer(uid->namehash,uid->attrib_data,uid->attrib_len);
+	rmd160_hash_buffer (uid->namehash, uid->attrib_data, uid->attrib_len);
       else
-	rmd160_hash_buffer(uid->namehash,uid->name,uid->len);
+	rmd160_hash_buffer (uid->namehash, uid->name, uid->len);
     }
 
   return uid->namehash;
@@ -454,8 +487,8 @@ mk_datestr (char *buffer, time_t atime)
 {
     struct tm *tp;
 
-    if (INVALID_TIME_CHECK (atime))
-      strcpy (buffer, "????" "-??" "-??"); /* Mark this as invalid.  */
+    if ( atime < 0 ) /* 32 bit time_t and after 2038-01-19 */
+        strcpy (buffer, "????" "-??" "-??"); /* mark this as invalid */
     else {
         tp = gmtime (&atime);
         sprintf (buffer,"%04d-%02d-%02d",
@@ -575,60 +608,51 @@ usagestr_from_pk( PKT_public_key *pk )
 const char *
 colon_strtime (u32 t)
 {
-    if (!t)
-        return "";
-    if (opt.fixed_list_mode) {
-        static char buf[15];
-        sprintf (buf, "%lu", (ulong)t);
-        return buf;
-    }
-    return strtimestamp(t);
+  static char buf[20];
+
+  if (!t)
+    return "";
+  snprintf (buf, sizeof buf, "%lu", (ulong)t);
+  return buf;
 }
 
 const char *
 colon_datestr_from_pk (PKT_public_key *pk)
 {
-    if (opt.fixed_list_mode) {
-        static char buf[15];
-        sprintf (buf, "%lu", (ulong)pk->timestamp);
-        return buf;
-    }
-    return datestr_from_pk (pk);
+  static char buf[20];
+
+  snprintf (buf, sizeof buf, "%lu", (ulong)pk->timestamp);
+  return buf;
 }
 
 const char *
 colon_datestr_from_sk (PKT_secret_key *sk)
 {
-    if (opt.fixed_list_mode) {
-        static char buf[15];
-        sprintf (buf, "%lu", (ulong)sk->timestamp);
-        return buf;
-    }
-    return datestr_from_sk (sk);
+  static char buf[20];
+
+  snprintf (buf, sizeof buf, "%lu", (ulong)sk->timestamp);
+  return buf;
 }
 
 const char *
 colon_datestr_from_sig (PKT_signature *sig)
 {
-    if (opt.fixed_list_mode) {
-        static char buf[15];
-        sprintf (buf, "%lu", (ulong)sig->timestamp);
-        return buf;
-    }
-    return datestr_from_sig (sig);
+  static char buf[20];
+
+  snprintf (buf, sizeof buf, "%lu", (ulong)sig->timestamp);
+  return buf;
 }
 
 const char *
 colon_expirestr_from_sig (PKT_signature *sig)
 {
-    if(!sig->expiredate)
-        return "";
-    if (opt.fixed_list_mode) {
-        static char buf[15];
-        sprintf (buf, "%lu", (ulong)sig->expiredate);
-        return buf;
-    }
-    return expirestr_from_sig (sig);
+  static char buf[20];
+
+  if (!sig->expiredate)
+    return "";
+
+  snprintf (buf, sizeof buf,"%lu", (ulong)sig->expiredate);
+  return buf;
 }
 
 
@@ -641,121 +665,167 @@ colon_expirestr_from_sig (PKT_signature *sig)
 byte *
 fingerprint_from_pk( PKT_public_key *pk, byte *array, size_t *ret_len )
 {
-    byte *p, *buf;
-    const byte *dp;
-    size_t len;
-    unsigned int n;
+  byte *buf;
+  const byte *dp;
+  size_t len, nbytes;
+  int i;
 
-    if( pk->version < 4 )
-      {
-	if( is_RSA(pk->pubkey_algo) )
-	  {
-	    /* RSA in version 3 packets is special */
-	    MD_HANDLE md;
+  if ( pk->version < 4 )
+    {
+      if ( is_RSA(pk->pubkey_algo) )
+        {
+          /* RSA in version 3 packets is special. */
+          gcry_md_hd_t md;
 
-	    md = md_open( DIGEST_ALGO_MD5, 0);
-	    if( pubkey_get_npkey( pk->pubkey_algo ) > 1 ) {
-	      p = buf = mpi_get_buffer( pk->pkey[0], &n, NULL );
-	      md_write( md, p, n );
-	      xfree(buf);
-	      p = buf = mpi_get_buffer( pk->pkey[1], &n, NULL );
-	      md_write( md, p, n );
-	      xfree(buf);
-	    }
-	    md_final(md);
-	    if( !array )
-	      array = xmalloc( 16 );
-	    len = 16;
-	    memcpy(array, md_read(md, DIGEST_ALGO_MD5), 16 );
-	    md_close(md);
-	  }
-	else
-	  {
-	    if(!array)
-	      array=xmalloc(16);
-	    len=16;
-	    memset(array,0,16);
-	  }
-      }
-    else {
-	MD_HANDLE md;
-	md = do_fingerprint_md(pk);
-	dp = md_read( md, 0 );
-	len = md_digest_length( md_get_algo( md ) );
-	assert( len <= MAX_FINGERPRINT_LEN );
-	if( !array )
-	    array = xmalloc( len );
-	memcpy(array, dp, len );
-	pk->keyid[0] = dp[12] << 24 | dp[13] << 16 | dp[14] << 8 | dp[15] ;
-	pk->keyid[1] = dp[16] << 24 | dp[17] << 16 | dp[18] << 8 | dp[19] ;
-	md_close(md);
+          if (gcry_md_open (&md, DIGEST_ALGO_MD5, 0))
+            BUG ();
+          if ( pubkey_get_npkey (pk->pubkey_algo) > 1 )
+            {
+              for (i=0; i < 2; i++)
+                {
+                  if (gcry_mpi_print (GCRYMPI_FMT_USG, NULL, 0,
+                                      &nbytes, pk->pkey[i]))
+                    BUG ();
+                  /* fixme: Better allocate BUF on the stack */
+                  buf = xmalloc (nbytes);
+                  if (gcry_mpi_print (GCRYMPI_FMT_USG, buf, nbytes,
+                                      NULL, pk->pkey[i]))
+                    BUG ();
+                  gcry_md_write (md, buf, nbytes);
+                  xfree (buf);
+                }
+            }
+          gcry_md_final (md);
+          if (!array)
+            array = xmalloc (16);
+          len = 16;
+          memcpy (array, gcry_md_read (md, DIGEST_ALGO_MD5), 16);
+          gcry_md_close(md);
+        }
+      else
+        {
+          if (!array)
+            array = xmalloc(16);
+          len = 16;
+          memset (array,0,16);
+        }
+    }
+  else
+    {
+      gcry_md_hd_t md;
+
+      md = do_fingerprint_md(pk);
+      dp = gcry_md_read( md, 0 );
+      len = gcry_md_get_algo_dlen (gcry_md_get_algo (md));
+      assert( len <= MAX_FINGERPRINT_LEN );
+      if (!array)
+        array = xmalloc ( len );
+      memcpy (array, dp, len );
+      pk->keyid[0] = dp[12] << 24 | dp[13] << 16 | dp[14] << 8 | dp[15] ;
+      pk->keyid[1] = dp[16] << 24 | dp[17] << 16 | dp[18] << 8 | dp[19] ;
+      gcry_md_close( md);
     }
 
-    *ret_len = len;
-    return array;
+  *ret_len = len;
+  return array;
 }
 
 byte *
 fingerprint_from_sk( PKT_secret_key *sk, byte *array, size_t *ret_len )
 {
-    byte *p, *buf;
-    const char *dp;
-    size_t len;
-    unsigned n;
+  byte *buf;
+  const char *dp;
+  size_t len, nbytes;
+  int i;
 
-    if( sk->version < 4 )
-      {
-	if( is_RSA(sk->pubkey_algo) )
-	  {
-	    /* RSA in version 3 packets is special */
-	    MD_HANDLE md;
+  if (sk->version < 4)
+    {
+      if ( is_RSA(sk->pubkey_algo) )
+        {
+          /* RSA in version 3 packets is special. */
+          gcry_md_hd_t md;
 
-	    md = md_open( DIGEST_ALGO_MD5, 0);
-	    if( pubkey_get_npkey( sk->pubkey_algo ) > 1 ) {
-	      p = buf = mpi_get_buffer( sk->skey[0], &n, NULL );
-	      md_write( md, p, n );
-	      xfree(buf);
-	      p = buf = mpi_get_buffer( sk->skey[1], &n, NULL );
-	      md_write( md, p, n );
-	      xfree(buf);
+          if (gcry_md_open (&md, DIGEST_ALGO_MD5, 0))
+            BUG ();
+          if (pubkey_get_npkey( sk->pubkey_algo ) > 1)
+            {
+              for (i=0; i < 2; i++)
+                {
+                  if (gcry_mpi_print (GCRYMPI_FMT_USG, NULL, 0,
+                                      &nbytes, sk->skey[i]))
+                    BUG ();
+                  /* fixme: Better allocate BUF on the stack */
+                  buf = xmalloc (nbytes);
+                  if (gcry_mpi_print (GCRYMPI_FMT_USG, buf, nbytes,
+                                      NULL, sk->skey[i]))
+                    BUG ();
+                  gcry_md_write (md, buf, nbytes);
+                  xfree (buf);
+                }
 	    }
-	    md_final(md);
-	    if( !array )
-	      array = xmalloc( 16 );
-	    len = 16;
-	    memcpy(array, md_read(md, DIGEST_ALGO_MD5), 16 );
-	    md_close(md);
-	  }
-	else
-	  {
-	    if(!array)
-	      array=xmalloc(16);
-	    len=16;
-	    memset(array,0,16);
-	  }
-      }
-    else {
-	MD_HANDLE md;
-	md = do_fingerprint_md_sk(sk);
-	if(md)
-	  {
-	    dp = md_read( md, 0 );
-	    len = md_digest_length( md_get_algo( md ) );
-	    assert( len <= MAX_FINGERPRINT_LEN );
-	    if( !array )
-	      array = xmalloc( len );
-	    memcpy(array, dp, len );
-	    md_close(md);
-	  }
-	else
-	  {
-	    len=MAX_FINGERPRINT_LEN;
-	    if(!array)
-	      array=xmalloc(len);
-	    memset(array,0,len);
-	  }
+          gcry_md_final(md);
+          if (!array)
+            array = xmalloc (16);
+          len = 16;
+          memcpy (array, gcry_md_read (md, DIGEST_ALGO_MD5), 16);
+          gcry_md_close (md);
+        }
+      else
+        {
+          if (!array)
+            array = xmalloc (16);
+          len=16;
+          memset (array,0,16);
+        }
+    }
+  else
+    {
+      gcry_md_hd_t md;
+
+      md = do_fingerprint_md_sk(sk);
+      if (md)
+        {
+          dp = gcry_md_read ( md, 0 );
+          len = gcry_md_get_algo_dlen ( gcry_md_get_algo (md) );
+          assert ( len <= MAX_FINGERPRINT_LEN );
+          if (!array)
+            array = xmalloc( len );
+          memcpy (array, dp, len);
+          gcry_md_close (md);
+        }
+      else
+        {
+          len = MAX_FINGERPRINT_LEN;
+          if (!array)
+            array = xmalloc (len);
+          memset (array, 0, len);
+        }
     }
 
-    *ret_len = len;
-    return array;
+  *ret_len = len;
+  return array;
+}
+
+
+/* Create a serialno/fpr string from the serial number and the secret
+   key.  Caller must free the returned string.  There is no error
+   return.  */
+char *
+serialno_and_fpr_from_sk (const unsigned char *sn, size_t snlen,
+                          PKT_secret_key *sk)
+{
+  unsigned char fpr[MAX_FINGERPRINT_LEN];
+  size_t fprlen;
+  char *buffer, *p;
+  int i;
+
+  fingerprint_from_sk (sk, fpr, &fprlen);
+  buffer = p = xmalloc (snlen*2 + 1 + fprlen*2 + 1);
+  for (i=0; i < snlen; i++, p+=2)
+    sprintf (p, "%02X", sn[i]);
+  *p++ = '/';
+  for (i=0; i < fprlen; i++, p+=2)
+    sprintf (p, "%02X", fpr[i]);
+  *p = 0;
+  return buffer;
 }

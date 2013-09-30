@@ -1,6 +1,6 @@
 /* seskey.c -  make sesssion keys etc.
- * Copyright (C) 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2006,
- *               2007 Free Software Foundation, Inc.
+ * Copyright (C) 1998, 1999, 2000, 2001, 2002, 2003, 2004,
+ *               2006, 2009 Free Software Foundation, Inc.
  *
  * This file is part of GnuPG.
  *
@@ -23,11 +23,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+
+#include "gpg.h"
 #include "util.h"
 #include "cipher.h"
-#include "mpi.h"
 #include "main.h"
 #include "i18n.h"
+
 
 /****************
  * Make a session key and put it into DEK
@@ -35,26 +37,33 @@
 void
 make_session_key( DEK *dek )
 {
-    CIPHER_HANDLE chd;
+    gcry_cipher_hd_t chd;
     int i, rc;
 
-    dek->keylen = cipher_get_keylen( dek->algo ) / 8;
+    dek->keylen = openpgp_cipher_get_algo_keylen (dek->algo);
 
-    chd = cipher_open( dek->algo, CIPHER_MODE_AUTO_CFB, 1 );
-    randomize_buffer( dek->key, dek->keylen, 1 );
-    for(i=0; i < 16; i++ ) {
-	rc = cipher_setkey( chd, dek->key, dek->keylen );
-	if( !rc ) {
-	    cipher_close( chd );
+    if (openpgp_cipher_open (&chd, dek->algo, GCRY_CIPHER_MODE_CFB,
+			     (GCRY_CIPHER_SECURE
+			      | (dek->algo >= 100 ?
+				 0 : GCRY_CIPHER_ENABLE_SYNC))) )
+      BUG();
+    gcry_randomize (dek->key, dek->keylen, GCRY_STRONG_RANDOM );
+    for (i=0; i < 16; i++ ) 
+      {
+	rc = gcry_cipher_setkey (chd, dek->key, dek->keylen);
+	if (!rc) 
+          {
+	    gcry_cipher_close (chd);
 	    return;
-	}
+          }
+        if (gpg_err_code (rc) != GPG_ERR_WEAK_KEY)
+          BUG();
 	log_info(_("weak key created - retrying\n") );
 	/* Renew the session key until we get a non-weak key. */
-	randomize_buffer( dek->key, dek->keylen, 1 );
-    }
-    log_fatal(_(
-	    "cannot avoid weak key for symmetric cipher; tried %d times!\n"),
-		  i);
+	gcry_randomize (dek->key, dek->keylen, GCRY_STRONG_RANDOM);
+      }
+    log_fatal (_("cannot avoid weak key for symmetric cipher; "
+                 "tried %d times!\n"), i);
 }
 
 
@@ -63,17 +72,17 @@ make_session_key( DEK *dek )
  * for packing the session key.
  * returns: A mpi with the session key (caller must free)
  */
-MPI
-encode_session_key( DEK *dek, unsigned nbits )
+gcry_mpi_t
+encode_session_key (DEK *dek, unsigned int nbits)
 {
-    int nframe = (nbits+7) / 8;
+    size_t nframe = (nbits+7) / 8;
     byte *p;
     byte *frame;
     int i,n;
     u16 csum;
-    MPI a;
+    gcry_mpi_t a;
 
-    /* the current limitation is that we can only use a session key
+    /* The current limitation is that we can only use a session key
      * whose length is a multiple of BITS_PER_MPI_LIMB
      * I think we can live with that.
      */
@@ -104,8 +113,8 @@ encode_session_key( DEK *dek, unsigned nbits )
     frame[n++] = 2;
     i = nframe - 6 - dek->keylen;
     assert( i > 0 );
-    p = get_random_bits( i*8, 1, 1 );
-    /* replace zero bytes by new values */
+    p = gcry_random_bytes_secure (i, GCRY_STRONG_RANDOM);
+    /* Replace zero bytes by new values. */
     for(;;) {
 	int j, k;
 	byte *pp;
@@ -117,7 +126,7 @@ encode_session_key( DEK *dek, unsigned nbits )
 	if( !k )
 	    break; /* okay: no zero bytes */
 	k += k/128 + 3; /* better get some more */
-	pp = get_random_bits( k*8, 1, 1);
+	pp = gcry_random_bytes_secure (k, GCRY_STRONG_RANDOM);
 	for(j=0; j < i && k ;) {
 	    if( !p[j] )
 		p[j] = pp[--k];
@@ -135,20 +144,21 @@ encode_session_key( DEK *dek, unsigned nbits )
     frame[n++] = csum >>8;
     frame[n++] = csum;
     assert( n == nframe );
-    a = mpi_alloc_secure ( mpi_nlimb_hint_from_nbytes (nframe) );
-    mpi_set_buffer( a, frame, nframe, 0 );
+    if (gcry_mpi_scan( &a, GCRYMPI_FMT_USG, frame, n, &nframe))
+      BUG();
     xfree(frame);
     return a;
 }
 
-MPI
-pkcs1_encode_md( MD_HANDLE md, int algo, size_t len, unsigned nbits,
-		 const byte *asn, size_t asnlen )
+
+static gcry_mpi_t
+do_encode_md( gcry_md_hd_t md, int algo, size_t len, unsigned nbits,
+	      const byte *asn, size_t asnlen )
 {
-    int nframe = (nbits+7) / 8;
+    size_t nframe = (nbits+7) / 8;
     byte *frame;
     int i,n;
-    MPI a;
+    gcry_mpi_t a;
 
     if( len + asnlen + 4  > nframe )
 	log_bug("can't encode a %d bit MD into a %d bits frame\n",
@@ -160,7 +170,7 @@ pkcs1_encode_md( MD_HANDLE md, int algo, size_t len, unsigned nbits,
      *
      * PAD consists of FF bytes.
      */
-    frame = md_is_secure(md)? xmalloc_secure( nframe ) : xmalloc( nframe );
+    frame = gcry_md_is_secure (md)? xmalloc_secure (nframe) : xmalloc (nframe);
     n = 0;
     frame[n++] = 0;
     frame[n++] = 1; /* block type */
@@ -169,12 +179,11 @@ pkcs1_encode_md( MD_HANDLE md, int algo, size_t len, unsigned nbits,
     memset( frame+n, 0xff, i ); n += i;
     frame[n++] = 0;
     memcpy( frame+n, asn, asnlen ); n += asnlen;
-    memcpy( frame+n, md_read(md, algo), len ); n += len;
+    memcpy( frame+n, gcry_md_read (md, algo), len ); n += len;
     assert( n == nframe );
-    a = (md_is_secure(md)
-	 ? mpi_alloc_secure ( mpi_nlimb_hint_from_nbytes (nframe) )
-	 : mpi_alloc ( mpi_nlimb_hint_from_nbytes (nframe )));
-    mpi_set_buffer( a, frame, nframe, 0 );
+
+    if (gcry_mpi_scan( &a, GCRYMPI_FMT_USG, frame, n, &nframe ))
+	BUG();
     xfree(frame);
 
     /* Note that PGP before version 2.3 encoded the MD as:
@@ -196,20 +205,20 @@ pkcs1_encode_md( MD_HANDLE md, int algo, size_t len, unsigned nbits,
  * enough to fill up q.  If the hash is too big, take the leftmost
  * bits.
  */
-MPI
-encode_md_value( PKT_public_key *pk, PKT_secret_key *sk,
-		 MD_HANDLE md, int hash_algo )
+gcry_mpi_t
+encode_md_value (PKT_public_key *pk, PKT_secret_key *sk,
+		 gcry_md_hd_t md, int hash_algo)
 {
-  MPI frame;
+  gcry_mpi_t frame;
 
   assert(hash_algo);
   assert(pk || sk);
 
-  if((pk?pk->pubkey_algo:sk->pubkey_algo) == PUBKEY_ALGO_DSA)
+  if((pk?pk->pubkey_algo:sk->pubkey_algo) == GCRY_PK_DSA)
     {
       /* It's a DSA signature, so find out the size of q. */
 
-      unsigned int qbytes=mpi_get_nbits(pk?pk->pkey[1]:sk->skey[1]);
+      size_t qbytes = gcry_mpi_get_nbits (pk?pk->pkey[1]:sk->skey[1]);
 
       /* Make sure it is a multiple of 8 bits. */
 
@@ -226,11 +235,11 @@ encode_md_value( PKT_public_key *pk, PKT_secret_key *sk,
 	 or something like that, which would look correct but allow
 	 trivial forgeries.  Yes, I know this rules out using MD5 with
 	 DSA. ;) */
-
-      if(qbytes<160)
+      if (qbytes < 160)
 	{
-	  log_error(_("DSA key %s uses an unsafe (%u bit) hash\n"),
-		    pk?keystr_from_pk(pk):keystr_from_sk(sk),qbytes);
+	  log_error (_("DSA key %s uses an unsafe (%u bit) hash\n"),
+                     pk?keystr_from_pk(pk):keystr_from_sk(sk),
+                     (unsigned int)qbytes);
 	  return NULL;
 	}
 
@@ -238,29 +247,35 @@ encode_md_value( PKT_public_key *pk, PKT_secret_key *sk,
 
       /* Check if we're too short.  Too long is safe as we'll
 	 automatically left-truncate. */
-
-      if(md_digest_length(hash_algo) < qbytes)
+      if (gcry_md_get_algo_dlen (hash_algo) < qbytes)
 	{
-	  log_error(_("DSA key %s requires a %u bit or larger hash\n"),
-		    pk?keystr_from_pk(pk):keystr_from_sk(sk),qbytes*8);
+	  log_error (_("DSA key %s requires a %u bit or larger hash\n"),
+                     pk?keystr_from_pk(pk):keystr_from_sk(sk),
+                     (unsigned int)(qbytes*8));
 	  return NULL;
 	}
 
-      frame = (md_is_secure(md)
-               ? mpi_alloc_secure (mpi_nlimb_hint_from_nbytes (qbytes) )
-               : mpi_alloc ( mpi_nlimb_hint_from_nbytes (qbytes) ));
-
-      mpi_set_buffer( frame, md_read(md, hash_algo), qbytes, 0 );
+      if (gcry_mpi_scan (&frame, GCRYMPI_FMT_USG,
+                         gcry_md_read (md, hash_algo), qbytes, &qbytes))
+        BUG();
     }
   else
     {
-      const byte *asn;
-      size_t asnlen,mdlen;
+      gpg_error_t rc;
+      byte *asn;
+      size_t asnlen;
 
-      asn = md_asn_oid( hash_algo, &asnlen, &mdlen );
-      frame = pkcs1_encode_md( md, hash_algo, mdlen,
-			       mpi_get_nbits(pk?pk->pkey[0]:sk->skey[0]),
-			       asn, asnlen );
+      rc = gcry_md_algo_info (hash_algo, GCRYCTL_GET_ASNOID, NULL, &asnlen);
+      if (rc)
+        log_fatal ("can't get OID of digest algorithm %d: %s\n",
+                   hash_algo, gpg_strerror (rc));
+      asn = xmalloc (asnlen);
+      if ( gcry_md_algo_info (hash_algo, GCRYCTL_GET_ASNOID, asn, &asnlen) )
+        BUG();
+      frame = do_encode_md (md, hash_algo, gcry_md_get_algo_dlen (hash_algo),
+                            gcry_mpi_get_nbits (pk?pk->pkey[0]:sk->skey[0]),
+                            asn, asnlen);
+      xfree (asn);
     }
 
   return frame;

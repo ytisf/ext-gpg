@@ -1,5 +1,5 @@
 /* keyring.c - keyring file handling
- * Copyright (C) 2001, 2004, 2007, 2009 Free Software Foundation, Inc.
+ * Copyright (C) 2001, 2004, 2009 Free Software Foundation, Inc.
  *
  * This file is part of GnuPG.
  *
@@ -27,10 +27,11 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
+#include "gpg.h"
 #include "util.h"
 #include "keyring.h"
 #include "packet.h"
-#include "keydb.h"
+#include "keydb.h" 
 #include "options.h"
 #include "main.h" /*for check_key_signature()*/
 #include "i18n.h"
@@ -45,14 +46,16 @@ struct off_item {
   /*off_t off;*/
 };
 
-typedef struct off_item **OffsetHashTable;
+typedef struct off_item **OffsetHashTable; 
 
 
 typedef struct keyring_name *KR_NAME;
-struct keyring_name {
+struct keyring_name 
+{
   struct keyring_name *next;
   int secret;
-  dotlock_t lockhd;
+  int readonly;
+  DOTLOCK lockhd;
   int is_locked;
   int did_full_scan;
   char fname[1];
@@ -76,7 +79,7 @@ struct keyring_handle {
     int error;
   } current;
   struct {
-    CONST_KR_NAME kr;
+    CONST_KR_NAME kr; 
     off_t offset;
     size_t pk_no;
     size_t uid_no;
@@ -99,7 +102,7 @@ static struct off_item *
 new_offset_item (void)
 {
   struct off_item *k;
-
+  
   k = xmalloc_clear (sizeof *k);
   return k;
 }
@@ -118,7 +121,7 @@ release_offset_items (struct off_item *k)
 }
 #endif
 
-static OffsetHashTable
+static OffsetHashTable 
 new_offset_hash_table (void)
 {
   struct off_item **tbl;
@@ -157,9 +160,11 @@ update_offset_hash_table (OffsetHashTable tbl, u32 *kid, off_t off)
 {
   struct off_item *k;
 
+  (void)off;
+
   for (k = tbl[(kid[1] & 0x07ff)]; k; k = k->next)
     {
-      if (k->kid[0] == kid[0] && k->kid[1] == kid[1])
+      if (k->kid[0] == kid[0] && k->kid[1] == kid[1]) 
         {
           /*k->off = off;*/
           return;
@@ -189,14 +194,15 @@ update_offset_hash_table_from_kb (OffsetHashTable tbl, KBNODE node, off_t off)
     }
 }
 
-/*
+/* 
  * Register a filename for plain keyring files.  ptr is set to a
  * pointer to be used to create a handles etc, or the already-issued
  * pointer if it has already been registered.  The function returns 1
  * if a new keyring was registered.
 */
 int
-keyring_register_filename (const char *fname, int secret, void **ptr)
+keyring_register_filename (const char *fname, int secret, int readonly, 
+                           void **ptr)
 {
     KR_NAME kr;
 
@@ -205,10 +211,13 @@ keyring_register_filename (const char *fname, int secret, void **ptr)
 
     for (kr=kr_names; kr; kr = kr->next)
       {
-        if (same_file_p (kr->fname, fname) )
+        if (same_file_p (kr->fname, fname))
 	  {
+            /* Already registered. */
+            if (readonly)
+              kr->readonly = 1;
             *ptr=kr;
-	    return 0; /* already registered */
+	    return 0; 
 	  }
       }
 
@@ -218,6 +227,7 @@ keyring_register_filename (const char *fname, int secret, void **ptr)
     kr = xmalloc (sizeof *kr + strlen (fname));
     strcpy (kr->fname, fname);
     kr->secret = !!secret;
+    kr->readonly = readonly;
     kr->lockhd = NULL;
     kr->is_locked = 0;
     kr->did_full_scan = 0;
@@ -239,14 +249,14 @@ keyring_is_writable (void *token)
 {
   KR_NAME r = token;
 
-  return r? !access (r->fname, W_OK) : 0;
+  return r? (r->readonly || !access (r->fname, W_OK)) : 0;
 }
-
+    
 
 
 /* Create a new handle for the resource associated with TOKEN.  SECRET
    is just just as a cross-check.
-
+   
    The returned handle must be released using keyring_release (). */
 KEYRING_HANDLE
 keyring_new (void *token, int secret)
@@ -255,7 +265,7 @@ keyring_new (void *token, int secret)
   KR_NAME resource = token;
 
   assert (resource && !resource->secret == !secret);
-
+  
   hd = xmalloc_clear (sizeof *hd);
   hd->resource = resource;
   hd->secret = !!secret;
@@ -263,7 +273,7 @@ keyring_new (void *token, int secret)
   return hd;
 }
 
-void
+void 
 keyring_release (KEYRING_HANDLE hd)
 {
     if (!hd)
@@ -287,14 +297,16 @@ keyring_get_resource_name (KEYRING_HANDLE hd)
 
 
 /*
- * Lock the keyring with the given handle, or unlok if yes is false.
+ * Lock the keyring with the given handle, or unlock if YES is false.
  * We ignore the handle and lock all registered files.
  */
-int
+int 
 keyring_lock (KEYRING_HANDLE hd, int yes)
 {
     KR_NAME kr;
     int rc = 0;
+
+    (void)hd;
 
     if (yes) {
         /* first make sure the lock handles are created */
@@ -302,7 +314,7 @@ keyring_lock (KEYRING_HANDLE hd, int yes)
             if (!keyring_is_writable(kr))
                 continue;
             if (!kr->lockhd) {
-                kr->lockhd = dotlock_create (kr->fname, 0);
+                kr->lockhd = create_dotlock( kr->fname );
                 if (!kr->lockhd) {
                     log_info ("can't allocate lock for `%s'\n", kr->fname );
                     rc = G10ERR_GENERAL;
@@ -311,18 +323,18 @@ keyring_lock (KEYRING_HANDLE hd, int yes)
         }
         if (rc)
             return rc;
-
+        
         /* and now set the locks */
         for (kr=kr_names; kr; kr = kr->next) {
             if (!keyring_is_writable(kr))
                 continue;
             if (kr->is_locked)
                 ;
-            else if (dotlock_take (kr->lockhd, -1) ) {
+            else if (make_dotlock (kr->lockhd, -1) ) {
                 log_info ("can't lock `%s'\n", kr->fname );
                 rc = G10ERR_GENERAL;
             }
-            else
+            else 
                 kr->is_locked = 1;
         }
     }
@@ -333,12 +345,12 @@ keyring_lock (KEYRING_HANDLE hd, int yes)
                 continue;
             if (!kr->is_locked)
                 ;
-            else if (dotlock_release (kr->lockhd))
+            else if (release_dotlock (kr->lockhd))
                 log_info ("can't unlock `%s'\n", kr->fname );
-            else
+            else 
                 kr->is_locked = 0;
         }
-    }
+    } 
 
     return rc;
 }
@@ -348,7 +360,7 @@ keyring_lock (KEYRING_HANDLE hd, int yes)
 /*
  * Return the last found keyring.  Caller must free it.
  * The returned keyblock has the kbode flag bit 0 set for the node with
- * the public key used to locate the keyblock or flag bit 1 set for
+ * the public key used to locate the keyblock or flag bit 1 set for 
  * the user ID node.
  */
 int
@@ -394,7 +406,7 @@ keyring_get_keyblock (KEYRING_HANDLE hd, KBNODE *ret_kb)
 	    init_packet (pkt);
 	    continue;
 	}
-	if (rc) {
+	if (rc) {  
             log_error ("keyring_get_keyblock: read error: %s\n",
                        g10_errstr(rc) );
             rc = G10ERR_INV_KEYRING;
@@ -414,46 +426,51 @@ keyring_get_keyblock (KEYRING_HANDLE hd, KBNODE *ret_kb)
         }
 
         in_cert = 1;
-        if (pkt->pkttype == PKT_RING_TRUST) {
+        if (pkt->pkttype == PKT_RING_TRUST) 
+          {
             /*(this code is duplicated after the loop)*/
-            if ( lastnode
+            if ( lastnode 
                  && lastnode->pkt->pkttype == PKT_SIGNATURE
                  && (pkt->pkt.ring_trust->sigcache & 1) ) {
-                /* This is a ring trust packet with a checked signature
+                /* This is a ring trust packet with a checked signature 
                  * status cache following directly a signature paket.
                  * Set the cache status into that signature packet.  */
                 PKT_signature *sig = lastnode->pkt->pkt.signature;
-
+                
                 sig->flags.checked = 1;
                 sig->flags.valid = !!(pkt->pkt.ring_trust->sigcache & 2);
             }
-            /* Reset LASTNODE, so that we set the cache status only
-             * from the ring trust packets immediately following
-             * signature packets.  */
+            /* Reset LASTNODE, so that we set the cache status only from
+             * the ring trust packet immediately following a signature. */
             lastnode = NULL;
 	    free_packet(pkt);
 	    init_packet(pkt);
-            continue;
-        }
+	    continue;
+          }
+
 
         node = lastnode = new_kbnode (pkt);
         if (!keyblock)
           keyblock = node;
         else
           add_kbnode (keyblock, node);
-
-        if ( pkt->pkttype == PKT_PUBLIC_KEY
-             || pkt->pkttype == PKT_PUBLIC_SUBKEY
-             || pkt->pkttype == PKT_SECRET_KEY
-             || pkt->pkttype == PKT_SECRET_SUBKEY)
+        switch (pkt->pkttype)
           {
+          case PKT_PUBLIC_KEY:
+          case PKT_PUBLIC_SUBKEY:
+          case PKT_SECRET_KEY:
+          case PKT_SECRET_SUBKEY:
             if (++pk_no == hd->found.pk_no)
               node->flag |= 1;
-          }
-        else if ( pkt->pkttype == PKT_USER_ID)
-          {
+            break;
+
+          case PKT_USER_ID:
             if (++uid_no == hd->found.uid_no)
               node->flag |= 2;
+            break;
+            
+          default:
+            break;
           }
 
         pkt = xmalloc (sizeof *pkt);
@@ -461,7 +478,7 @@ keyring_get_keyblock (KEYRING_HANDLE hd, KBNODE *ret_kb)
     }
     set_packet_list_mode(save_mode);
 
-    if (rc == -1 && keyblock)
+    if (rc == -1 && keyblock) 
 	rc = 0; /* got the entire keyblock */
 
     if (rc || !ret_kb)
@@ -469,7 +486,7 @@ keyring_get_keyblock (KEYRING_HANDLE hd, KBNODE *ret_kb)
     else {
         /*(duplicated form the loop body)*/
         if ( pkt && pkt->pkttype == PKT_RING_TRUST
-             && lastnode
+             && lastnode 
              && lastnode->pkt->pkttype == PKT_SIGNATURE
              && (pkt->pkt.ring_trust->sigcache & 1) ) {
             PKT_signature *sig = lastnode->pkt->pkt.signature;
@@ -483,7 +500,7 @@ keyring_get_keyblock (KEYRING_HANDLE hd, KBNODE *ret_kb)
     iobuf_close(a);
 
     /* Make sure that future search operations fail immediately when
-     * we know that we are working on a invalid keyring
+     * we know that we are working on a invalid keyring 
      */
     if (rc == G10ERR_INV_KEYRING)
         hd->current.error = rc;
@@ -498,6 +515,9 @@ keyring_update_keyblock (KEYRING_HANDLE hd, KBNODE kb)
 
     if (!hd->found.kr)
         return -1; /* no successful prior search */
+
+    if (hd->found.kr->readonly)
+      return gpg_error (GPG_ERR_EACCES);
 
     if (!hd->found.n_packets) {
         /* need to know the number of packets - do a dummy get_keyblock*/
@@ -540,16 +560,24 @@ keyring_insert_keyblock (KEYRING_HANDLE hd, KBNODE kb)
     if (!hd)
         fname = NULL;
     else if (hd->found.kr)
+      {
         fname = hd->found.kr->fname;
+        if (hd->found.kr->readonly)
+          return gpg_error (GPG_ERR_EACCES);
+      }
     else if (hd->current.kr)
+      {
         fname = hd->current.kr->fname;
-    else
+        if (hd->current.kr->readonly)
+          return gpg_error (GPG_ERR_EACCES);
+      }
+    else 
         fname = hd->resource? hd->resource->fname:NULL;
 
     if (!fname)
-        return G10ERR_GENERAL;
+        return G10ERR_GENERAL; 
 
-    /* close this one otherwise we will lose the position for
+    /* Close this one otherwise we will lose the position for
      * a next search.  Fixme: it would be better to adjust the position
      * after the write opertions.
      */
@@ -562,7 +590,7 @@ keyring_insert_keyblock (KEYRING_HANDLE hd, KBNODE kb)
       {
         update_offset_hash_table_from_kb (kr_offtbl, kb, 0);
       }
-
+      
     return rc;
 }
 
@@ -574,6 +602,9 @@ keyring_delete_keyblock (KEYRING_HANDLE hd)
 
     if (!hd->found.kr)
         return -1; /* no successful prior search */
+
+    if (hd->found.kr->readonly)
+      return gpg_error (GPG_ERR_EACCES);
 
     if (!hd->found.n_packets) {
         /* need to know the number of packets - do a dummy get_keyblock*/
@@ -608,10 +639,10 @@ keyring_delete_keyblock (KEYRING_HANDLE hd)
 
 
 
-/*
+/* 
  * Start the next search on this handle right at the beginning
  */
-int
+int 
 keyring_search_reset (KEYRING_HANDLE hd)
 {
     assert (hd);
@@ -621,17 +652,17 @@ keyring_search_reset (KEYRING_HANDLE hd)
     hd->current.iobuf = NULL;
     hd->current.eof = 0;
     hd->current.error = 0;
-
+    
     hd->found.kr = NULL;
     hd->found.offset = 0;
-    return 0;
+    return 0; 
 }
 
 
 static int
 prepare_search (KEYRING_HANDLE hd)
 {
-    if (hd->current.error)
+    if (hd->current.error)  
         return hd->current.error; /* still in error state */
 
     if (hd->current.kr && !hd->current.eof) {
@@ -640,7 +671,7 @@ prepare_search (KEYRING_HANDLE hd)
         return 0; /* okay */
     }
 
-    if (!hd->current.kr && hd->current.eof)
+    if (!hd->current.kr && hd->current.eof)  
         return -1; /* still EOF */
 
     if (!hd->current.kr) { /* start search with first keyring */
@@ -652,7 +683,7 @@ prepare_search (KEYRING_HANDLE hd)
         assert (!hd->current.iobuf);
     }
     else { /* EOF */
-        iobuf_close (hd->current.iobuf);
+        iobuf_close (hd->current.iobuf); 
         hd->current.iobuf = NULL;
         hd->current.kr = NULL;
         hd->current.eof = 1;
@@ -663,8 +694,9 @@ prepare_search (KEYRING_HANDLE hd)
     hd->current.iobuf = iobuf_open (hd->current.kr->fname);
     if (!hd->current.iobuf)
       {
+        hd->current.error = gpg_error_from_syserror ();
         log_error(_("can't open `%s'\n"), hd->current.kr->fname );
-        return (hd->current.error = G10ERR_OPEN_FILE);
+        return hd->current.error;
       }
 
     return 0;
@@ -809,7 +841,7 @@ compare_name (int mode, const char *name, const char *uid, size_t uidlen)
     int i;
     const char *s, *se;
 
-    if (mode == KEYDB_SEARCH_MODE_EXACT) {
+    if (mode == KEYDB_SEARCH_MODE_EXACT) { 
 	for (i=0; name[i] && uidlen; i++, uidlen--)
 	    if (uid[i] != name[i])
 		break;
@@ -820,7 +852,7 @@ compare_name (int mode, const char *name, const char *uid, size_t uidlen)
 	if (ascii_memistr( uid, uidlen, name ))
 	    return 0;
     }
-    else if (   mode == KEYDB_SEARCH_MODE_MAIL
+    else if (   mode == KEYDB_SEARCH_MODE_MAIL 
              || mode == KEYDB_SEARCH_MODE_MAILSUB
              || mode == KEYDB_SEARCH_MODE_MAILEND) {
 	for (i=0, s= uid; i < uidlen && *s != '<'; s++, i++)
@@ -832,7 +864,7 @@ compare_name (int mode, const char *name, const char *uid, size_t uidlen)
 		;
 	    if (i < uidlen) {
 		i = se - s;
-		if (mode == KEYDB_SEARCH_MODE_MAIL) {
+		if (mode == KEYDB_SEARCH_MODE_MAIL) { 
 		    if( strlen(name)-2 == i
                         && !ascii_memcasecmp( s, name+1, i) )
 			return 0;
@@ -856,11 +888,11 @@ compare_name (int mode, const char *name, const char *uid, size_t uidlen)
 }
 
 
-/*
+/* 
  * Search through the keyring(s), starting at the current position,
  * for a keyblock which contains one of the keys described in the DESC array.
  */
-int
+int 
 keyring_search (KEYRING_HANDLE hd, KEYDB_SEARCH_DESC *desc,
 		size_t ndesc, size_t *descindex)
 {
@@ -880,28 +912,28 @@ keyring_search (KEYRING_HANDLE hd, KEYDB_SEARCH_DESC *desc,
 
   /* figure out what information we need */
   need_uid = need_words = need_keyid = need_fpr = any_skip = 0;
-  for (n=0; n < ndesc; n++)
+  for (n=0; n < ndesc; n++) 
     {
-      switch (desc[n].mode)
+      switch (desc[n].mode) 
         {
-        case KEYDB_SEARCH_MODE_EXACT:
+        case KEYDB_SEARCH_MODE_EXACT: 
         case KEYDB_SEARCH_MODE_SUBSTR:
         case KEYDB_SEARCH_MODE_MAIL:
         case KEYDB_SEARCH_MODE_MAILSUB:
         case KEYDB_SEARCH_MODE_MAILEND:
           need_uid = 1;
           break;
-        case KEYDB_SEARCH_MODE_WORDS:
+        case KEYDB_SEARCH_MODE_WORDS: 
           need_uid = 1;
           need_words = 1;
           break;
-        case KEYDB_SEARCH_MODE_SHORT_KID:
+        case KEYDB_SEARCH_MODE_SHORT_KID: 
         case KEYDB_SEARCH_MODE_LONG_KID:
           need_keyid = 1;
           break;
-        case KEYDB_SEARCH_MODE_FPR16:
+        case KEYDB_SEARCH_MODE_FPR16: 
         case KEYDB_SEARCH_MODE_FPR20:
-        case KEYDB_SEARCH_MODE_FPR:
+        case KEYDB_SEARCH_MODE_FPR: 
           need_fpr = 1;
           break;
         case KEYDB_SEARCH_MODE_FIRST:
@@ -910,7 +942,7 @@ keyring_search (KEYRING_HANDLE hd, KEYDB_SEARCH_DESC *desc,
           break;
         default: break;
 	}
-      if (desc[n].skipfnc)
+      if (desc[n].skipfnc) 
         {
           any_skip = 1;
           need_keyid = 1;
@@ -929,7 +961,7 @@ keyring_search (KEYRING_HANDLE hd, KEYDB_SEARCH_DESC *desc,
   else if (ndesc == 1 && desc[0].mode == KEYDB_SEARCH_MODE_LONG_KID)
     {
       struct off_item *oi;
-
+            
       oi = lookup_offset_hash_table (kr_offtbl, desc[0].u.kid);
       if (!oi)
         { /* We know that we don't have this key */
@@ -938,9 +970,9 @@ keyring_search (KEYRING_HANDLE hd, KEYDB_SEARCH_DESC *desc,
           return -1;
         }
       /* We could now create a positive search status and return.
-       * However the problem is that another instance of gpg may
+       * However the problem is that another instance of gpg may 
        * have changed the keyring so that the offsets are not valid
-       * anymore - therefore we don't do it
+       * anymore - therefore we don't do it 
        */
     }
 
@@ -951,13 +983,13 @@ keyring_search (KEYRING_HANDLE hd, KEYDB_SEARCH_DESC *desc,
       log_debug ("word search mode does not yet work\n");
       /* FIXME: here is a long standing bug in our function and in addition we
          just use the first search description */
-      for (n=0; n < ndesc && !name; n++)
+      for (n=0; n < ndesc && !name; n++) 
         {
-          if (desc[n].mode == KEYDB_SEARCH_MODE_WORDS)
+          if (desc[n].mode == KEYDB_SEARCH_MODE_WORDS) 
             name = desc[n].u.name;
         }
       assert (name);
-      if ( !hd->word_match.name || strcmp (hd->word_match.name, name) )
+      if ( !hd->word_match.name || strcmp (hd->word_match.name, name) ) 
         {
           /* name changed */
           xfree (hd->word_match.name);
@@ -965,7 +997,7 @@ keyring_search (KEYRING_HANDLE hd, KEYDB_SEARCH_DESC *desc,
           hd->word_match.name = xstrdup (name);
           hd->word_match.pattern = prepare_word_match (name);
         }
-      name = hd->word_match.pattern;
+      /*  name = hd->word_match.pattern; */
     }
 
   init_packet(&pkt);
@@ -975,23 +1007,23 @@ keyring_search (KEYRING_HANDLE hd, KEYDB_SEARCH_DESC *desc,
   main_offset = 0;
   pk_no = uid_no = 0;
   initial_skip = 1; /* skip until we see the start of a keyblock */
-  while (!(rc=search_packet (hd->current.iobuf, &pkt, &offset, need_uid)))
+  while (!(rc=search_packet (hd->current.iobuf, &pkt, &offset, need_uid))) 
     {
       byte afp[MAX_FINGERPRINT_LEN];
       size_t an;
 
-      if (pkt.pkttype == PKT_PUBLIC_KEY  || pkt.pkttype == PKT_SECRET_KEY)
+      if (pkt.pkttype == PKT_PUBLIC_KEY  || pkt.pkttype == PKT_SECRET_KEY) 
         {
           main_offset = offset;
           pk_no = uid_no = 0;
           initial_skip = 0;
         }
-      if (initial_skip)
+      if (initial_skip) 
         {
           free_packet (&pkt);
           continue;
         }
-
+	
       pk = NULL;
       sk = NULL;
       uid = NULL;
@@ -1012,13 +1044,13 @@ keyring_search (KEYRING_HANDLE hd, KEYDB_SEARCH_DESC *desc,
           if (use_offtbl && !kr_offtbl_ready)
             update_offset_hash_table (kr_offtbl, aki, main_offset);
         }
-      else if (pkt.pkttype == PKT_USER_ID)
+      else if (pkt.pkttype == PKT_USER_ID) 
         {
           uid = pkt.pkt.user_id;
           ++uid_no;
         }
       else if (    pkt.pkttype == PKT_SECRET_KEY
-                   || pkt.pkttype == PKT_SECRET_SUBKEY)
+                   || pkt.pkttype == PKT_SECRET_SUBKEY) 
         {
           sk = pkt.pkt.secret_key;
           ++pk_no;
@@ -1030,28 +1062,28 @@ keyring_search (KEYRING_HANDLE hd, KEYDB_SEARCH_DESC *desc,
           }
           if (need_keyid)
             keyid_from_sk (sk, aki);
-
+            
         }
 
-      for (n=0; n < ndesc; n++)
+      for (n=0; n < ndesc; n++) 
         {
           switch (desc[n].mode) {
-          case KEYDB_SEARCH_MODE_NONE:
+          case KEYDB_SEARCH_MODE_NONE: 
             BUG ();
             break;
-          case KEYDB_SEARCH_MODE_EXACT:
+          case KEYDB_SEARCH_MODE_EXACT: 
           case KEYDB_SEARCH_MODE_SUBSTR:
           case KEYDB_SEARCH_MODE_MAIL:
           case KEYDB_SEARCH_MODE_MAILSUB:
           case KEYDB_SEARCH_MODE_MAILEND:
-          case KEYDB_SEARCH_MODE_WORDS:
+          case KEYDB_SEARCH_MODE_WORDS: 
             if ( uid && !compare_name (desc[n].mode,
                                        desc[n].u.name,
-                                       uid->name, uid->len))
+                                       uid->name, uid->len)) 
               goto found;
             break;
-
-          case KEYDB_SEARCH_MODE_SHORT_KID:
+                
+          case KEYDB_SEARCH_MODE_SHORT_KID: 
             if ((pk||sk) && desc[n].u.kid[1] == aki[1])
               goto found;
             break;
@@ -1065,19 +1097,19 @@ keyring_search (KEYRING_HANDLE hd, KEYDB_SEARCH_DESC *desc,
               goto found;
             break;
           case KEYDB_SEARCH_MODE_FPR20:
-          case KEYDB_SEARCH_MODE_FPR:
+          case KEYDB_SEARCH_MODE_FPR: 
             if ((pk||sk) && !memcmp (desc[n].u.fpr, afp, 20))
               goto found;
             break;
-          case KEYDB_SEARCH_MODE_FIRST:
+          case KEYDB_SEARCH_MODE_FIRST: 
             if (pk||sk)
               goto found;
             break;
-          case KEYDB_SEARCH_MODE_NEXT:
+          case KEYDB_SEARCH_MODE_NEXT: 
             if (pk||sk)
               goto found;
             break;
-          default:
+          default: 
             rc = G10ERR_INV_ARG;
             goto found;
           }
@@ -1089,7 +1121,7 @@ keyring_search (KEYRING_HANDLE hd, KEYDB_SEARCH_DESC *desc,
 	 meaningful if this function returns with no errors. */
       if(descindex)
 	*descindex=n;
-      for (n=any_skip?0:ndesc; n < ndesc; n++)
+      for (n=any_skip?0:ndesc; n < ndesc; n++) 
         {
           if (desc[n].skipfnc
               && desc[n].skipfnc (desc[n].skipfncvalue, aki, uid))
@@ -1115,12 +1147,12 @@ keyring_search (KEYRING_HANDLE hd, KEYDB_SEARCH_DESC *desc,
       if (use_offtbl && !kr_offtbl_ready)
         {
           KR_NAME kr;
-
+          
           /* First set the did_full_scan flag for this keyring (ignore
              secret keyrings) */
           for (kr=kr_names; kr; kr = kr->next)
             {
-              if (!kr->secret && hd->resource == kr)
+              if (!kr->secret && hd->resource == kr) 
                 {
                   kr->did_full_scan = 1;
                   break;
@@ -1130,14 +1162,14 @@ keyring_search (KEYRING_HANDLE hd, KEYDB_SEARCH_DESC *desc,
              offtbl ready */
           for (kr=kr_names; kr; kr = kr->next)
             {
-              if (!kr->secret && !kr->did_full_scan)
+              if (!kr->secret && !kr->did_full_scan) 
                 break;
             }
           if (!kr)
             kr_offtbl_ready = 1;
         }
     }
-  else
+  else 
     hd->current.error = rc;
 
   free_packet(&pkt);
@@ -1149,7 +1181,7 @@ keyring_search (KEYRING_HANDLE hd, KEYDB_SEARCH_DESC *desc,
 static int
 create_tmp_file (const char *template,
                  char **r_bakfname, char **r_tmpfname, IOBUF *r_fp)
-{
+{  
   char *bakfname, *tmpfname;
   mode_t oldmask;
 
@@ -1173,7 +1205,7 @@ create_tmp_file (const char *template,
       strcpy (tmpfname,template);
       strcpy (tmpfname+strlen(template)-4, EXTSEP_S "tmp");
     }
-    else
+    else 
       { /* file does not end with gpg; hmmm */
 	bakfname = xmalloc (strlen( template ) + 5);
 	strcpy (stpcpy(bakfname, template), EXTSEP_S "bak");
@@ -1182,11 +1214,11 @@ create_tmp_file (const char *template,
 	strcpy (stpcpy(tmpfname, template), EXTSEP_S "tmp");
     }
 # else /* Posix file names */
-    bakfname = xmalloc (strlen (template) + sizeof (GNUPG_BAK_SFX) + 1);
-    strcpy (stpcpy (bakfname, template), GNUPG_BAK_SFX);
+    bakfname = xmalloc (strlen( template ) + 2);
+    strcpy (stpcpy (bakfname,template),"~");
 
-    tmpfname = xmalloc (strlen (template) + sizeof (GNUPG_TMP_SFX) + 1 );
-    strcpy (stpcpy(tmpfname, template), GNUPG_TMP_SFX);
+    tmpfname = xmalloc (strlen( template ) + 5);
+    strcpy (stpcpy(tmpfname,template), EXTSEP_S "tmp");
 # endif /* Posix filename */
 
     /* Create the temp file with limited access */
@@ -1201,12 +1233,13 @@ create_tmp_file (const char *template,
     umask(oldmask);
     if (!*r_fp)
       {
+        int rc = gpg_error_from_syserror ();
 	log_error(_("can't create `%s': %s\n"), tmpfname, strerror(errno) );
         xfree (tmpfname);
         xfree (bakfname);
-	return G10ERR_OPEN_FILE;
+	return rc;
       }
-
+    
     *r_bakfname = bakfname;
     *r_tmpfname = tmpfname;
     return 0;
@@ -1217,34 +1250,41 @@ static int
 rename_tmp_file (const char *bakfname, const char *tmpfname,
                  const char *fname, int secret )
 {
-  int rc=G10ERR_GENERAL;
+  int rc = 0;
 
   /* It's a secret keyring, so let's force a fsync just to be safe on
      filesystems that may not sync data and metadata together
-     (ext4). */
-  if(secret && iobuf_ioctl(NULL,4,0,(char*)tmpfname)!=0)
-    goto fail;
+     (e.g. ext4). */
+  if (secret && iobuf_ioctl (NULL, 4, 0, (char*)tmpfname))
+    {
+      rc = gpg_error_from_syserror ();
+      goto fail;
+    }
 
-  /* invalidate close caches*/
-  if(iobuf_ioctl (NULL, 2, 0, (char*)tmpfname )!=0)
-    goto fail;
+  /* Invalidate close caches.  */
+  if (iobuf_ioctl (NULL, 2, 0, (char*)tmpfname ))
+    {
+      rc = gpg_error_from_syserror ();
+      goto fail;
+    }
   iobuf_ioctl (NULL, 2, 0, (char*)bakfname );
   iobuf_ioctl (NULL, 2, 0, (char*)fname );
 
   /* first make a backup file except for secret keyrings */
   if (!secret)
-    {
+    { 
 #if defined(HAVE_DOSISH_SYSTEM) || defined(__riscos__)
       remove (bakfname);
 #endif
       if (rename (fname, bakfname) )
         {
+          rc = gpg_error_from_syserror ();
           log_error ("renaming `%s' to `%s' failed: %s\n",
                      fname, bakfname, strerror(errno) );
-          return G10ERR_RENAME_FILE;
+          return rc;
 	}
     }
-
+  
   /* then rename the file */
 #if defined(HAVE_DOSISH_SYSTEM) || defined(__riscos__)
   remove( fname );
@@ -1253,10 +1293,10 @@ rename_tmp_file (const char *bakfname, const char *tmpfname,
     unregister_secured_file (fname);
   if (rename (tmpfname, fname) )
     {
+      rc = gpg_error_from_syserror ();
       log_error (_("renaming `%s' to `%s' failed: %s\n"),
                  tmpfname, fname, strerror(errno) );
       register_secured_file (fname);
-      rc = G10ERR_RENAME_FILE;
       goto fail;
     }
 
@@ -1268,27 +1308,26 @@ rename_tmp_file (const char *bakfname, const char *tmpfname,
 
     statbuf.st_mode=S_IRUSR | S_IWUSR;
 
-    if(((secret && !opt.preserve_permissions) ||
-	(stat(bakfname,&statbuf)==0)) &&
-       (chmod(fname,statbuf.st_mode)==0))
+    if (((secret && !opt.preserve_permissions)
+         || !stat (bakfname,&statbuf)) 
+        && !chmod (fname,statbuf.st_mode))
       ;
     else
-      log_error("WARNING: unable to restore permissions to `%s': %s",
-		fname,strerror(errno));
+      log_error ("WARNING: unable to restore permissions to `%s': %s",
+                 fname, strerror(errno));
   }
 #endif
 
   return 0;
 
  fail:
-  if(secret)
+  if (secret)
     {
       log_info(_("WARNING: 2 files with confidential information exists.\n"));
       log_info(_("%s is the unchanged one\n"), fname );
       log_info(_("%s is the new one\n"), tmpfname );
       log_info(_("Please fix this possible security flaw\n"));
     }
-
   return rc;
 }
 
@@ -1298,10 +1337,10 @@ write_keyblock (IOBUF fp, KBNODE keyblock)
 {
   KBNODE kbctx = NULL, node;
   int rc;
-
-  while ( (node = walk_kbnode (keyblock, &kbctx, 0)) )
+  
+  while ( (node = walk_kbnode (keyblock, &kbctx, 0)) ) 
     {
-      if (node->pkt->pkttype == PKT_RING_TRUST)
+      if (node->pkt->pkttype == PKT_RING_TRUST) 
         continue; /* we write it later on our own */
 
       if ( (rc = build_packet (fp, node->pkt) ))
@@ -1310,12 +1349,12 @@ write_keyblock (IOBUF fp, KBNODE keyblock)
                      node->pkt->pkttype, g10_errstr(rc) );
           return rc;
         }
-      if (node->pkt->pkttype == PKT_SIGNATURE)
+      if (node->pkt->pkttype == PKT_SIGNATURE) 
         { /* always write a signature cache packet */
           PKT_signature *sig = node->pkt->pkt.signature;
           unsigned int cacheval = 0;
-
-          if (sig->flags.checked)
+          
+          if (sig->flags.checked) 
             {
               cacheval |= 1;
               if (sig->flags.valid)
@@ -1324,16 +1363,18 @@ write_keyblock (IOBUF fp, KBNODE keyblock)
           iobuf_put (fp, 0xb0); /* old style packet 12, 1 byte len*/
           iobuf_put (fp, 2);    /* 2 bytes */
           iobuf_put (fp, 0);    /* unused */
-          if (iobuf_put (fp, cacheval)) {
-            log_error ("writing sigcache packet failed\n");
-            return G10ERR_WRITE_FILE;
-          }
+          if (iobuf_put (fp, cacheval)) 
+            {
+              rc = gpg_error_from_syserror ();
+              log_error ("writing sigcache packet failed\n");
+              return rc;
+            }
         }
     }
   return 0;
 }
 
-/*
+/* 
  * Walk over all public keyrings, check the signatures and replace the
  * keyring with a new one where the signature cache is then updated.
  * This is only done for the public keyrings.
@@ -1369,16 +1410,16 @@ keyring_rebuild_cache (void *token,int noisy)
             {
               if (iobuf_close (tmpfp))
                 {
+                  rc = gpg_error_from_syserror ();
                   log_error ("error closing `%s': %s\n",
                              tmpfilename, strerror (errno));
-                  rc = G10ERR_CLOSE_FILE;
                   goto leave;
                 }
               /* because we have switched resources, we can be sure that
                * the original file is closed */
               tmpfp = NULL;
             }
-          rc = lastresname? rename_tmp_file (bakfilename, tmpfilename,
+          rc = lastresname? rename_tmp_file (bakfilename, tmpfilename, 
                                              lastresname, 0) : 0;
           xfree (tmpfilename);  tmpfilename = NULL;
           xfree (bakfilename);  bakfilename = NULL;
@@ -1391,10 +1432,10 @@ keyring_rebuild_cache (void *token,int noisy)
           if (rc)
             goto leave;
         }
-
+      
       release_kbnode (keyblock);
       rc = keyring_get_keyblock (hd, &keyblock);
-      if (rc)
+      if (rc) 
         {
           log_error ("keyring_get_keyblock failed: %s\n", g10_errstr(rc));
           goto leave;
@@ -1410,7 +1451,7 @@ keyring_rebuild_cache (void *token,int noisy)
             continue;
           log_info ("Hint: backup your keys and try running `%s'\n",
                     "gpg --rebuild-keydb-caches");
-          rc = G10ERR_INV_KEYRING;
+          rc = gpg_error (GPG_ERR_INV_KEYRING);
           goto leave;
         }
 
@@ -1429,8 +1470,8 @@ keyring_rebuild_cache (void *token,int noisy)
 	      PKT_signature *sig=node->pkt->pkt.signature;
 
 	      if(!opt.no_sig_cache && sig->flags.checked && sig->flags.valid
-		 && (check_digest_algo(sig->digest_algo)
-		     || check_pubkey_algo(sig->pubkey_algo)))
+		 && (openpgp_md_test_algo(sig->digest_algo)
+		     || openpgp_pk_test_algo(sig->pubkey_algo)))
 		sig->flags.checked=sig->flags.valid=0;
 	      else
 		check_key_signature (keyblock, node, NULL);
@@ -1438,7 +1479,7 @@ keyring_rebuild_cache (void *token,int noisy)
               sigcount++;
             }
         }
-
+      
       /* write the keyblock to the temporary file */
       rc = write_keyblock (tmpfp, keyblock);
       if (rc)
@@ -1448,10 +1489,10 @@ keyring_rebuild_cache (void *token,int noisy)
         log_info(_("%lu keys cached so far (%lu signatures)\n"),
                  count, sigcount );
 
-    } /* end main loop */
+    } /* end main loop */ 
   if (rc == -1)
     rc = 0;
-  if (rc)
+  if (rc) 
     {
       log_error ("keyring_search failed: %s\n", g10_errstr(rc));
       goto leave;
@@ -1462,9 +1503,9 @@ keyring_rebuild_cache (void *token,int noisy)
     {
       if (iobuf_close (tmpfp))
         {
+          rc = gpg_error_from_syserror ();
           log_error ("error closing `%s': %s\n",
                      tmpfilename, strerror (errno));
-          rc = G10ERR_CLOSE_FILE;
           goto leave;
         }
       /* because we have switched resources, we can be sure that
@@ -1479,8 +1520,8 @@ keyring_rebuild_cache (void *token,int noisy)
  leave:
   if (tmpfp)
     iobuf_cancel (tmpfp);
-  xfree (tmpfilename);
-  xfree (bakfilename);
+  xfree (tmpfilename);  
+  xfree (bakfilename);  
   release_kbnode (keyblock);
   keyring_lock (hd, 0);
   keyring_release (hd);
@@ -1503,13 +1544,13 @@ do_copy (int mode, const char *fname, KBNODE root, int secret,
     char *bakfname = NULL;
     char *tmpfname = NULL;
 
-    /* Open the source file. Because we do a rename, we have to check the
+    /* Open the source file. Because we do a rename, we have to check the 
        permissions of the file */
     if (access (fname, W_OK))
-      return G10ERR_WRITE_FILE;
+      return gpg_error_from_syserror ();
 
     fp = iobuf_open (fname);
-    if (mode == 1 && !fp && errno == ENOENT) {
+    if (mode == 1 && !fp && errno == ENOENT) { 
 	/* insert mode but file does not exist: create a new file */
 	KBNODE kbctx, node;
 	mode_t oldmask;
@@ -1524,8 +1565,9 @@ do_copy (int mode, const char *fname, KBNODE root, int secret,
 	umask(oldmask);
 	if( !newfp )
 	  {
+            rc = gpg_error_from_syserror ();
 	    log_error (_("can't create `%s': %s\n"), fname, strerror(errno));
-	    return G10ERR_OPEN_FILE;
+	    return rc;
 	  }
 	if( !opt.quiet )
 	    log_info(_("%s: keyring created\n"), fname );
@@ -1536,20 +1578,21 @@ do_copy (int mode, const char *fname, KBNODE root, int secret,
 		log_error("build_packet(%d) failed: %s\n",
 			    node->pkt->pkttype, g10_errstr(rc) );
 		iobuf_cancel(newfp);
-		return G10ERR_WRITE_FILE;
+		return rc;
 	    }
 	}
 	if( iobuf_close(newfp) ) {
+            rc = gpg_error_from_syserror ();
 	    log_error ("%s: close failed: %s\n", fname, strerror(errno));
-	    return G10ERR_CLOSE_FILE;
+	    return rc;
 	}
 	return 0; /* ready */
     }
 
     if( !fp )
       {
+        rc = gpg_error_from_syserror ();
 	log_error(_("can't open `%s': %s\n"), fname, strerror(errno) );
-	rc = G10ERR_OPEN_FILE;
 	goto leave;
       }
 
@@ -1631,13 +1674,13 @@ do_copy (int mode, const char *fname, KBNODE root, int secret,
 
     /* close both files */
     if( iobuf_close(fp) ) {
+        rc = gpg_error_from_syserror ();
 	log_error("%s: close failed: %s\n", fname, strerror(errno) );
-	rc = G10ERR_CLOSE_FILE;
 	goto leave;
     }
     if( iobuf_close(newfp) ) {
+        rc = gpg_error_from_syserror ();
 	log_error("%s: close failed: %s\n", tmpfname, strerror(errno) );
-	rc = G10ERR_CLOSE_FILE;
 	goto leave;
     }
 

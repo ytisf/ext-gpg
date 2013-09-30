@@ -21,13 +21,11 @@
 #ifndef G10_KEYDB_H
 #define G10_KEYDB_H
 
+#include <assuan.h>
+
 #include "types.h"
-#include "global.h"
 #include "packet.h"
 #include "cipher.h"
-#ifdef ENABLE_AGENT_SUPPORT
-#include "assuan.h"
-#endif
 
 /* What qualifies as a certification (rather than a signature?) */
 #define IS_CERT(s)       (IS_KEY_SIG(s) || IS_UID_SIG(s) || IS_SUBKEY_SIG(s) \
@@ -78,7 +76,7 @@ struct keyblock_pos_struct {
     enum resource_type rt;
     off_t offset;    /* position information */
     unsigned count;  /* length of the keyblock in packets */
-    IOBUF  fp;	     /* used by enum_keyblocks */
+    iobuf_t  fp;     /* Used by enum_keyblocks. */
     int secret;      /* working on a secret keyring */
     PACKET *pkt;     /* ditto */
     int valid;
@@ -144,6 +142,14 @@ struct keydb_search_desc {
     int exact;
 };
 
+
+/* Helper type for preference fucntions. */
+union pref_hint
+{
+  int digest_length;
+};
+
+
 /*-- keydb.c --*/
 
 /*
@@ -174,41 +180,34 @@ int keydb_search_fpr (KEYDB_HANDLE hd, const byte *fpr);
 void show_revocation_reason( PKT_public_key *pk, int mode );
 int  check_signatures_trust( PKT_signature *sig );
 void release_pk_list( PK_LIST pk_list );
-int  build_pk_list( STRLIST rcpts, PK_LIST *ret_pk_list, unsigned use );
-union pref_hint
-{
-  int digest_length;
-};
+int  build_pk_list( strlist_t rcpts, PK_LIST *ret_pk_list, unsigned use );
 int  algo_available( preftype_t preftype, int algo,
 		     const union pref_hint *hint );
 int  select_algo_from_prefs( PK_LIST pk_list, int preftype,
-			     int request, const union pref_hint *hint );
+			     int request, const union pref_hint *hint);
 int  select_mdc_from_pklist (PK_LIST pk_list);
+void warn_missing_mdc_from_pklist (PK_LIST pk_list);
+void warn_missing_aes_from_pklist (PK_LIST pk_list);
 
 /*-- skclist.c --*/
+int  random_is_faked (void);
 void release_sk_list( SK_LIST sk_list );
-int  build_sk_list( STRLIST locusr, SK_LIST *ret_sk_list,
+int  build_sk_list( strlist_t locusr, SK_LIST *ret_sk_list,
 					    int unlock, unsigned use );
 
 /*-- passphrase.h --*/
-#ifdef ENABLE_AGENT_SUPPORT
+unsigned char encode_s2k_iterations (int iterations);
 assuan_context_t agent_open (int try, const char *orig_codeset);
 void agent_close (assuan_context_t ctx);
-#else
-/* If we build w/o agent support, assuan.h won't get included and thus
-   we need to define a replacement for some Assuan types. */
-typedef int assuan_error_t;
-typedef void *assuan_context_t;
-#endif
 int  have_static_passphrase(void);
 void set_passphrase_from_string(const char *pass);
 void read_passphrase_from_fd( int fd );
 void passphrase_clear_cache ( u32 *keyid, const char *cacheid, int algo );
-char *ask_passphrase (const char *description,
-                      const char *tryagain_text,
-                      const char *promptid,
-                      const char *prompt, 
-                      const char *cacheid, int *canceled);
+DEK *passphrase_to_dek_ext(u32 *keyid, int pubkey_algo,
+                           int cipher_algo, STRING2KEY *s2k, int mode,
+                           const char *tryagain_text,
+                           const char *custdesc, const char *custprompt,
+                           int *canceled);
 DEK *passphrase_to_dek( u32 *keyid, int pubkey_algo,
 			int cipher_algo, STRING2KEY *s2k, int mode,
                         const char *tryagain_text, int *canceled);
@@ -223,11 +222,11 @@ void getkey_disable_caches(void);
 int get_pubkey( PKT_public_key *pk, u32 *keyid );
 int get_pubkey_fast ( PKT_public_key *pk, u32 *keyid );
 KBNODE get_pubkeyblock( u32 *keyid );
-int get_pubkey_byname( PKT_public_key *pk,  const char *name,
+int get_pubkey_byname (GETKEY_CTX *rx, PKT_public_key *pk,  const char *name,
                        KBNODE *ret_keyblock, KEYDB_HANDLE *ret_kdbhd,
-		       int include_unusable );
+		       int include_unusable, int no_akl );
 int get_pubkey_bynames( GETKEY_CTX *rx, PKT_public_key *pk,
-			STRLIST names, KBNODE *ret_keyblock );
+			strlist_t names, KBNODE *ret_keyblock );
 int get_pubkey_next( GETKEY_CTX ctx, PKT_public_key *pk, KBNODE *ret_keyblock );
 void get_pubkey_end( GETKEY_CTX ctx );
 int get_seckey( PKT_secret_key *sk, u32 *keyid );
@@ -242,7 +241,7 @@ int get_keyblock_bylid( KBNODE *ret_keyblock, ulong lid );
 int seckey_available( u32 *keyid );
 int get_seckey_byname( PKT_secret_key *sk, const char *name, int unlock );
 int get_seckey_bynames( GETKEY_CTX *rx, PKT_secret_key *sk,
-			STRLIST names, KBNODE *ret_keyblock );
+			strlist_t names, KBNODE *ret_keyblock );
 int get_seckey_next (GETKEY_CTX ctx, PKT_secret_key *sk, KBNODE *ret_keyblock);
 void get_seckey_end( GETKEY_CTX ctx );
 
@@ -266,7 +265,8 @@ int parse_auto_key_locate(char *options);
 
 /*-- keyid.c --*/
 int pubkey_letter( int algo );
-void hash_public_key( MD_HANDLE md, PKT_public_key *pk );
+u32 v3_keyid (gcry_mpi_t a, u32 *ki);
+void hash_public_key( gcry_md_hd_t md, PKT_public_key *pk );
 size_t keystrlen(void);
 const char *keystr(u32 *keyid);
 const char *keystr_from_pk(PKT_public_key *pk);
@@ -294,6 +294,8 @@ const char *colon_datestr_from_sig (PKT_signature *sig);
 const char *colon_expirestr_from_sig (PKT_signature *sig);
 byte *fingerprint_from_sk( PKT_secret_key *sk, byte *buf, size_t *ret_len );
 byte *fingerprint_from_pk( PKT_public_key *pk, byte *buf, size_t *ret_len );
+char *serialno_and_fpr_from_sk (const unsigned char *sn, size_t snlen,
+                                PKT_secret_key *sk);
 
 /*-- kbnode.c --*/
 KBNODE new_kbnode( PACKET *pkt );

@@ -1,6 +1,6 @@
-/* misc.c -  miscellaneous functions
+/* misc.c - miscellaneous functions
  * Copyright (C) 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005, 2006, 2007,
- *               2008 Free Software Foundation, Inc.
+ *               2008, 2009 Free Software Foundation, Inc.
  *
  * This file is part of GnuPG.
  *
@@ -36,10 +36,14 @@
 #ifdef ENABLE_SELINUX_HACKS
 #include <sys/stat.h>
 #endif
-#ifdef _WIN32
+
+#ifdef HAVE_W32_SYSTEM
 #include <time.h>
 #include <process.h>
-#include <windows.h> 
+#ifdef HAVE_WINSOCK2_H
+# include <winsock2.h>
+#endif
+#include <windows.h>
 #include <shlobj.h>
 #ifndef CSIDL_APPDATA
 #define CSIDL_APPDATA 0x001a
@@ -50,28 +54,37 @@
 #ifndef CSIDL_FLAG_CREATE
 #define CSIDL_FLAG_CREATE 0x8000
 #endif
-#include "errors.h"
-#include "dynload.h"
-#endif /*_WIN32*/
+#endif /*HAVE_W32_SYSTEM*/
 
-#ifdef __VMS
-# include <time.h>
-#endif /* def __VMS */
-
+#include "gpg.h"
+#ifdef HAVE_W32_SYSTEM
+# include "status.h"
+#endif /*HAVE_W32_SYSTEM*/
 #include "util.h"
 #include "main.h"
 #include "photoid.h"
 #include "options.h"
+#include "call-agent.h"
 #include "i18n.h"
-#include "cardglue.h"
 
+
+static int
+string_count_chr (const char *string, int c)
+{
+  int count;
+
+  for (count=0; *string; string++ )
+    if ( *string == c )
+      count++;
+  return count;
+}
 
 
 
 #ifdef ENABLE_SELINUX_HACKS
 /* A object and a global variable to keep track of files marked as
    secured. */
-struct secured_file_item 
+struct secured_file_item
 {
   struct secured_file_item *next;
   ino_t ino;
@@ -81,51 +94,6 @@ static struct secured_file_item *secured_files;
 #endif /*ENABLE_SELINUX_HACKS*/
 
 
-
-#if defined(__linux__) && defined(__alpha__) && __GLIBC__ < 2
-static int
-setsysinfo(unsigned long op, void *buffer, unsigned long size,
-		     int *start, void *arg, unsigned long flag)
-{
-    return syscall(__NR_osf_setsysinfo, op, buffer, size, start, arg, flag);
-}
-
-void
-trap_unaligned(void)
-{
-    unsigned int buf[2];
-
-    buf[0] = SSIN_UACPROC;
-    buf[1] = UAC_SIGBUS | UAC_NOPRINT;
-    setsysinfo(SSI_NVPAIRS, buf, 1, 0, 0, 0);
-}
-#else
-void
-trap_unaligned(void)
-{  /* dummy */
-}
-#endif
-
-
-int
-disable_core_dumps()
-{
-#if defined(HAVE_DOSISH_SYSTEM) || defined(__VMS)
-    return 0;
-#else
-#ifdef HAVE_SETRLIMIT
-    struct rlimit limit;
-
-    limit.rlim_cur = 0;
-    limit.rlim_max = 0;
-    if( !setrlimit( RLIMIT_CORE, &limit ) )
-	return 0;
-    if( errno != EINVAL && errno != ENOSYS )
-	log_fatal(_("can't disable core dumps: %s\n"), strerror(errno) );
-#endif
-    return 1;
-#endif
-}
 
 
 /* For the sake of SELinux we want to restrict access through gpg to
@@ -141,7 +109,7 @@ register_secured_file (const char *fname)
 
   /* Note that we stop immediatley if something goes wrong here. */
   if (stat (fname, &buf))
-    log_fatal (_("fstat of `%s' failed in %s: %s\n"), fname, 
+    log_fatal (_("fstat of `%s' failed in %s: %s\n"), fname,
                "register_secured_file", strerror (errno));
 /*   log_debug ("registering `%s' i=%lu.%lu\n", fname, */
 /*              (unsigned long)buf.st_dev, (unsigned long)buf.st_ino); */
@@ -156,10 +124,12 @@ register_secured_file (const char *fname)
   sf->dev = buf.st_dev;
   sf->next = secured_files;
   secured_files = sf;
-#endif /*ENABLE_SELINUX_HACKS*/
+#else /*!ENABLE_SELINUX_HACKS*/
+  (void)fname;
+#endif /*!ENABLE_SELINUX_HACKS*/
 }
 
-/* Remove a file registerd as secure. */
+/* Remove a file registered as secure. */
 void
 unregister_secured_file (const char *fname)
 {
@@ -187,12 +157,14 @@ unregister_secured_file (const char *fname)
           return;
         }
     }
-#endif /*ENABLE_SELINUX_HACKS*/
+#else /*!ENABLE_SELINUX_HACKS*/
+  (void)fname;
+#endif /*!ENABLE_SELINUX_HACKS*/
 }
 
 /* Return true if FD is corresponds to a secured file.  Using -1 for
-   FS is allowed and will return false. */ 
-int 
+   FS is allowed and will return false. */
+int
 is_secured_file (int fd)
 {
 #ifdef ENABLE_SELINUX_HACKS
@@ -206,7 +178,7 @@ is_secured_file (int fd)
      secure if something went wrong. */
   if (fstat (fd, &buf))
     {
-      log_error (_("fstat(%d) failed in %s: %s\n"), fd, 
+      log_error (_("fstat(%d) failed in %s: %s\n"), fd,
                  "is_secured_file", strerror (errno));
       return 1;
     }
@@ -217,15 +189,17 @@ is_secured_file (int fd)
       if (sf->ino == buf.st_ino && sf->dev == buf.st_dev)
         return 1; /* Yes.  */
     }
-#endif /*ENABLE_SELINUX_HACKS*/
+#else /*!ENABLE_SELINUX_HACKS*/
+  (void)fd;
+#endif /*!ENABLE_SELINUX_HACKS*/
   return 0; /* No. */
 }
 
 /* Return true if FNAME is corresponds to a secured file.  Using NULL,
    "" or "-" for FS is allowed and will return false. This function is
    used before creating a file, thus it won't fail if the file does
-   not exist. */ 
-int 
+   not exist. */
+int
 is_secured_filename (const char *fname)
 {
 #ifdef ENABLE_SELINUX_HACKS
@@ -233,7 +207,7 @@ is_secured_filename (const char *fname)
   struct secured_file_item *sf;
 
   if (iobuf_is_pipe_filename (fname) || !*fname)
-    return 0; 
+    return 0;
 
   /* Note that we print out a error here and claim that a file is
      secure if something went wrong. */
@@ -252,7 +226,9 @@ is_secured_filename (const char *fname)
       if (sf->ino == buf.st_ino && sf->dev == buf.st_dev)
         return 1; /* Yes.  */
     }
-#endif /*ENABLE_SELINUX_HACKS*/
+#else /*!ENABLE_SELINUX_HACKS*/
+  (void)fname;
+#endif /*!ENABLE_SELINUX_HACKS*/
   return 0; /* No. */
 }
 
@@ -280,19 +256,24 @@ checksum( byte *p, unsigned n )
 }
 
 u16
-checksum_mpi( MPI a )
+checksum_mpi (gcry_mpi_t a)
 {
-    u16 csum;
-    byte *buffer;
-    unsigned nbytes;
-    unsigned nbits;
+  u16 csum;
+  byte *buffer;
+  size_t nbytes;
 
-    buffer = mpi_get_buffer( a, &nbytes, NULL );
-    nbits = mpi_get_nbits(a);
-    csum = checksum_u16( nbits );
-    csum += checksum( buffer, nbytes );
-    xfree( buffer );
-    return csum;
+  if ( gcry_mpi_print (GCRYMPI_FMT_PGP, NULL, 0, &nbytes, a) )
+    BUG ();
+  /* Fixme: For numbers not in secure memory we should use a stack
+   * based buffer and only allocate a larger one if mpi_print returns
+   * an error. */
+  buffer = (gcry_is_secure(a)?
+            gcry_xmalloc_secure (nbytes) : gcry_xmalloc (nbytes));
+  if ( gcry_mpi_print (GCRYMPI_FMT_PGP, buffer, nbytes, NULL, a) )
+    BUG ();
+  csum = checksum (buffer, nbytes);
+  xfree (buffer);
+  return csum;
 }
 
 u32
@@ -315,8 +296,8 @@ print_pubkey_algo_note( int algo )
       if(!warn)
 	{
 	  warn=1;
-	  log_info(_("WARNING: using experimental public key algorithm %s\n"),
-		   pubkey_algo_to_string(algo));
+	  log_info (_("WARNING: using experimental public key algorithm %s\n"),
+		    gcry_pk_algo_name (algo));
 	}
     }
   else if (algo == 20)
@@ -334,8 +315,8 @@ print_cipher_algo_note( int algo )
       if(!warn)
 	{
 	  warn=1;
-	  log_info(_("WARNING: using experimental cipher algorithm %s\n"),
-		   cipher_algo_to_string(algo));
+	  log_info (_("WARNING: using experimental cipher algorithm %s\n"),
+                    openpgp_cipher_algo_name (algo));
 	}
     }
 }
@@ -349,73 +330,149 @@ print_digest_algo_note( int algo )
       if(!warn)
 	{
 	  warn=1;
-	  log_info(_("WARNING: using experimental digest algorithm %s\n"),
-		   digest_algo_to_string(algo));
+	  log_info (_("WARNING: using experimental digest algorithm %s\n"),
+                    gcry_md_algo_name (algo));
 	}
     }
   else if(algo==DIGEST_ALGO_MD5)
-    md5_digest_warn (1);
+    log_info (_("WARNING: digest algorithm %s is deprecated\n"),
+              gcry_md_algo_name (algo));
 }
 
-/* Return a string which is used as a kind of process ID */
-const byte *
-get_session_marker( size_t *rlen )
+
+/* Map OpenPGP algo numbers to those used by Libgcrypt.  We need to do
+   this for algorithms we implemented in Libgcrypt after they become
+   part of OpenPGP.  */
+int
+map_cipher_openpgp_to_gcry (int algo)
 {
-    static byte marker[SIZEOF_UNSIGNED_LONG*2];
-    static int initialized;
-
-    if ( !initialized ) {
-        volatile ulong aa, bb; /* we really want the uninitialized value */
-        ulong a, b;
-
-        initialized = 1;
-        /* also this marker is guessable it is not easy to use this 
-         * for a faked control packet because an attacker does not
-         * have enough control about the time the verification does 
-         * take place.  Of course, we can add just more random but 
-         * than we need the random generator even for verification
-         * tasks - which does not make sense. */
-        a = aa ^ (ulong)getpid();
-        b = bb ^ (ulong)time(NULL);
-        memcpy( marker, &a, SIZEOF_UNSIGNED_LONG );
-        memcpy( marker+SIZEOF_UNSIGNED_LONG, &b, SIZEOF_UNSIGNED_LONG );
+  switch (algo)
+    {
+    case CIPHER_ALGO_CAMELLIA128: return 310;
+    case CIPHER_ALGO_CAMELLIA192: return 311;
+    case CIPHER_ALGO_CAMELLIA256: return 312;
+    default: return algo;
     }
-    *rlen = sizeof(marker);
-    return marker;
+}
+
+/* The inverse fucntion of above.  */
+static int
+map_cipher_gcry_to_openpgp (int algo)
+{
+  switch (algo)
+    {
+    case 310: return CIPHER_ALGO_CAMELLIA128;
+    case 311: return CIPHER_ALGO_CAMELLIA192;
+    case 312: return CIPHER_ALGO_CAMELLIA256;
+    default: return algo;
+    }
+}
+
+
+/* Return the block length of an OpenPGP cipher algorithm.  */
+int
+openpgp_cipher_blocklen (int algo)
+{
+  /* We use the numbers from OpenPGP to be sure that we get the right
+     block length.  This is so that the packet parsing code works even
+     for unknown algorithms (for which we assume 8 due to tradition).
+
+     NOTE: If you change the the returned blocklen above 16, check
+     the callers because they may use a fixed size buffer of that
+     size. */
+  switch (algo)
+    {
+    case 7: case 8: case 9: /* AES */
+    case 10: /* Twofish */
+    case 11: case 12: case 13: /* Camellia */
+      return 16;
+
+    default:
+      return 8;
+    }
 }
 
 /****************
- * Wrapper around the libgcrypt function with addional checks on
- * openPGP contraints for the algo ID.
+ * Wrapper around the libgcrypt function with additonal checks on
+ * the OpenPGP contraints for the algo ID.
  */
 int
 openpgp_cipher_test_algo( int algo )
 {
-    if( algo < 0 || algo > 110 )
-        return G10ERR_CIPHER_ALGO;
-    return check_cipher_algo(algo);
+  /* (5 and 6 are marked reserved by rfc4880.)  */
+  if ( algo < 0 || algo > 110 || algo == 5 || algo == 6 )
+    return gpg_error (GPG_ERR_CIPHER_ALGO);
+
+  return gcry_cipher_test_algo (map_cipher_openpgp_to_gcry (algo));
+}
+
+/* Map the OpenPGP cipher algorithm whose ID is contained in ALGORITHM to a
+   string representation of the algorithm name.  For unknown algorithm
+   IDs this function returns "?".  */
+const char *
+openpgp_cipher_algo_name (int algo)
+{
+  return gcry_cipher_algo_name (map_cipher_openpgp_to_gcry (algo));
+}
+
+
+/* Map OpenPGP public key algorithm numbers to those used by
+   Libgcrypt.  */
+int
+map_pk_openpgp_to_gcry (int algo)
+{
+  switch (algo)
+    {
+    case PUBKEY_ALGO_ECDSA: return 301 /*GCRY_PK_ECDSA*/;
+    case PUBKEY_ALGO_ECDH:  return 302 /*GCRY_PK_ECDH*/;
+    default: return algo;
+    }
+}
+
+
+int
+openpgp_pk_test_algo( int algo )
+{
+  /* Dont't allow type 20 keys unless in rfc2440 mode.  */
+  if (!RFC2440 && algo == 20)
+    return gpg_error (GPG_ERR_PUBKEY_ALGO);
+
+  if (algo == GCRY_PK_ELG_E)
+    algo = GCRY_PK_ELG;
+
+  if (algo < 0 || algo > 110)
+    return gpg_error (GPG_ERR_PUBKEY_ALGO);
+  return gcry_pk_test_algo (algo);
 }
 
 int
-openpgp_pk_test_algo( int algo, unsigned int usage_flags )
+openpgp_pk_test_algo2( int algo, unsigned int use )
 {
-    /* Dont't allow type 20 keys unless in rfc2440 mode.  */
-    if (!RFC2440 && algo == 20)
-        return G10ERR_PUBKEY_ALGO;
-    if( algo < 0 || algo > 110 )
-	return G10ERR_PUBKEY_ALGO;
-    return check_pubkey_algo2( algo, usage_flags );
+  size_t use_buf = use;
+
+  /* Dont't allow type 20 keys unless in rfc2440 mode.  */
+  if (!RFC2440 && algo == 20)
+    return gpg_error (GPG_ERR_PUBKEY_ALGO);
+
+  if (algo == GCRY_PK_ELG_E)
+    algo = GCRY_PK_ELG;
+
+  if (algo < 0 || algo > 110)
+    return gpg_error (GPG_ERR_PUBKEY_ALGO);
+
+  return gcry_pk_algo_info (algo, GCRYCTL_TEST_ALGO, NULL, &use_buf);
 }
 
-int 
+int
 openpgp_pk_algo_usage ( int algo )
 {
-    int use = 0; 
-    
-    /* they are hardwired in gpg 1.0 */
-    switch ( algo ) {    
+    int use = 0;
+
+    /* They are hardwired in gpg 1.0. */
+    switch ( algo ) {
       case PUBKEY_ALGO_RSA:
-          use = PUBKEY_USAGE_CERT | PUBKEY_USAGE_SIG | PUBKEY_USAGE_ENC | PUBKEY_USAGE_AUTH;
+          use = (PUBKEY_USAGE_CERT | PUBKEY_USAGE_SIG
+                 | PUBKEY_USAGE_ENC | PUBKEY_USAGE_AUTH);
           break;
       case PUBKEY_ALGO_RSA_E:
           use = PUBKEY_USAGE_ENC;
@@ -424,16 +481,13 @@ openpgp_pk_algo_usage ( int algo )
           use = PUBKEY_USAGE_CERT | PUBKEY_USAGE_SIG;
           break;
       case PUBKEY_ALGO_ELGAMAL:
-          /* Allow encryption with type 20 keys if RFC-2440 compliance
-             has been selected.  Signing is broken thus we won't allow
-             this.  */  
           if (RFC2440)
-            use = PUBKEY_USAGE_ENC;
+             use = PUBKEY_USAGE_ENC;
           break;
       case PUBKEY_ALGO_ELGAMAL_E:
           use = PUBKEY_USAGE_ENC;
           break;
-      case PUBKEY_ALGO_DSA:  
+      case PUBKEY_ALGO_DSA:
           use = PUBKEY_USAGE_CERT | PUBKEY_USAGE_SIG | PUBKEY_USAGE_AUTH;
           break;
       default:
@@ -445,9 +499,14 @@ openpgp_pk_algo_usage ( int algo )
 int
 openpgp_md_test_algo( int algo )
 {
-    if( algo < 0 || algo > 110 )
-        return G10ERR_DIGEST_ALGO;
-    return check_digest_algo(algo);
+  /* Note: If the list of actual supported OpenPGP algorithms changes,
+     make sure that our hard coded values at
+     print_status_begin_signing() gets updated. */
+  /* 4, 5, 6, 7 are defined by rfc2440 but will be removed from the
+     next revision of the standard.  */
+  if (algo < 0 || algo > 110 || (algo >= 4 && algo <= 7))
+    return gpg_error (GPG_ERR_DIGEST_ALGO);
+  return gcry_md_test_algo (algo);
 }
 
 #ifdef USE_IDEA
@@ -467,41 +526,9 @@ idea_cipher_warn(int show)
 }
 #endif
 
-/* Print a warning if the md5 digest algorithm has been used.  This
-   warning is printed only once unless SHOW is used. */
-void
-md5_digest_warn (int show)
-{
-  static int warned = 0;
 
-  if (!warned || show)
-    {
-      log_info (_("WARNING: digest algorithm %s is deprecated\n"),
-                digest_algo_to_string (DIGEST_ALGO_MD5));
-      log_info (_("please see %s for more information\n"),
-                "http://www.gnupg.org/faq/weak-digest-algos.html");
-      warned = 1;
-    }
-}
-
-
-void
-not_in_gpg1_notice (void)
-{
-  static int warned = 0;
-
-  if (!warned)
-    {
-      log_info (_("NOTE: This feature is not available in %s\n"), "GnuPG 1.x");
-      log_info (_("please see %s for more information\n"),
-                "http://www.gnupg.org/faq/features-not-in-gnupg-1.html");
-      warned = 1;
-    }
-}
-
-
-static unsigned long 
-get_signature_count(PKT_secret_key *sk)
+static unsigned long
+get_signature_count (PKT_secret_key *sk)
 {
 #ifdef ENABLE_CARD_SUPPORT
   if(sk && sk->is_protected && sk->protect.s2k.mode==1002)
@@ -509,7 +536,7 @@ get_signature_count(PKT_secret_key *sk)
       struct agent_card_info_s info;
       if(agent_scd_getattr("SIG-COUNTER",&info)==0)
 	return info.sig_counter;
-    }  
+    }
 #endif
 
   /* How to do this without a card? */
@@ -600,7 +627,7 @@ pct_expando(const char *string,struct expando_args *args)
 		  sprintf(&ret[idx],"%lu",get_signature_count(args->sk));
 		  idx+=strlen(&ret[idx]);
 		  done=1;
-		}	      
+		}
 	      break;
 
 	    case 'p': /* primary pk fingerprint of a sk */
@@ -669,7 +696,7 @@ pct_expando(const char *string,struct expando_args *args)
 		  case 't': /* e.g. "jpg" */
 		    str=image_type_to_string(args->imagetype,0);
 		    break;
-		  
+
 		  case 'T': /* e.g. "image/jpeg" */
 		    str=image_type_to_string(args->imagetype,2);
 		    break;
@@ -767,6 +794,67 @@ deprecated_command (const char *name)
 }
 
 
+void
+obsolete_option (const char *configname, unsigned int configlineno,
+                 const char *name)
+{
+  if(configname)
+    log_info (_("%s:%u: obsolete option \"%s\" - it has no effect\n"),
+              configname, configlineno, name);
+  else
+    log_info (_("WARNING: \"%s\" is an obsolete option - it has no effect\n"),
+              name);
+}
+
+
+/*
+ * Wrapper around gcry_cipher_map_name to provide a fallback using the
+ * "Sn" syntax as used by the preference strings.
+ */
+int
+string_to_cipher_algo (const char *string)
+{
+  int val;
+
+  val = map_cipher_gcry_to_openpgp (gcry_cipher_map_name (string));
+  if (!val && string && (string[0]=='S' || string[0]=='s'))
+    {
+      char *endptr;
+
+      string++;
+      val = strtol (string, &endptr, 10);
+      if (!*string || *endptr || openpgp_cipher_test_algo (val))
+        val = 0;
+    }
+
+  return val;
+}
+
+/*
+ * Wrapper around gcry_md_map_name to provide a fallback using the
+ * "Hn" syntax as used by the preference strings.
+ */
+int
+string_to_digest_algo (const char *string)
+{
+  int val;
+
+  val = gcry_md_map_name (string);
+  if (!val && string && (string[0]=='H' || string[0]=='h'))
+    {
+      char *endptr;
+
+      string++;
+      val = strtol (string, &endptr, 10);
+      if (!*string || *endptr || openpgp_md_test_algo (val))
+        val = 0;
+    }
+
+  return val;
+}
+
+
+
 const char *
 compress_algo_to_string(int algo)
 {
@@ -799,7 +887,7 @@ compress_algo_to_string(int algo)
 int
 string_to_compress_algo(const char *string)
 {
-  /* NOTE TO TRANSLATOR: See doc/TRANSLATE about this string. */
+  /* TRANSLATORS: See doc/TRANSLATE about this string. */
   if(match_multistr(_("uncompressed|none"),string))
     return 0;
   else if(ascii_strcasecmp(string,"uncompressed")==0)
@@ -1136,39 +1224,6 @@ parse_options(char *str,unsigned int *options,
 }
 
 
-/* Return a new malloced string by unescaping the string S.  Escaping
-   is percent escaping and '+'/space mapping.  A binary nul will
-   silently be replaced by a 0xFF. */
-char *
-unescape_percent_string (const unsigned char *s)
-{
-  char *buffer, *d;
-
-  buffer = d = xmalloc (strlen (s)+1);
-  while (*s)
-    {
-      if (*s == '%' && s[1] && s[2])
-        { 
-          s++;
-          *d = xtoi_2 (s);
-          if (!*d)
-            *d = '\xff';
-          d++;
-          s += 2;
-        }
-      else if (*s == '+')
-        {
-          *d++ = ' ';
-          s++;
-        }
-      else
-        *d++ = *s++;
-    }
-  *d = 0; 
-  return buffer;
-}
-
-
 /* Check whether the string has characters not valid in an RFC-822
    address.  To cope with OpenPGP we ignore non-ascii characters
    so that for example umlauts are legal in an email address.  An
@@ -1186,9 +1241,9 @@ has_invalid_email_chars (const char *s)
   const char *valid_chars=
     "01234567890_-.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
-  for ( ; *s; s++ ) 
+  for ( ; *s; s++ )
     {
-      if ( *s & 0x80 )
+      if ( (*s & 0x80) )
         continue; /* We only care about ASCII.  */
       if ( *s == '@' )
         at_seen=1;
@@ -1217,131 +1272,7 @@ is_valid_mailbox (const char *name)
 }
 
 
-/* This is a helper function to load a Windows function from either of
-   one DLLs. */
-#ifdef HAVE_W32_SYSTEM
-static HRESULT
-w32_shgetfolderpath (HWND a, int b, HANDLE c, DWORD d, LPSTR e)
-{
-  static int initialized;
-  static HRESULT (WINAPI * func)(HWND,int,HANDLE,DWORD,LPSTR);
-
-  if (!initialized)
-    {
-      static char *dllnames[] = { "shell32.dll", "shfolder.dll", NULL };
-      void *handle;
-      int i;
-
-      initialized = 1;
-
-      for (i=0, handle = NULL; !handle && dllnames[i]; i++)
-        {
-          handle = dlopen (dllnames[i], RTLD_LAZY);
-          if (handle)
-            {
-              func = dlsym (handle, "SHGetFolderPathA");
-              if (!func)
-                {
-                  dlclose (handle);
-                  handle = NULL;
-                }
-            }
-        }
-    }
-
-  if (func)
-    return func (a,b,c,d,e);
-  else
-    return -1;
-}
-#endif /*HAVE_W32_SYSTEM*/
-
-
-/* Set up the default home directory.  The usual --homedir option
-   should be parsed later. */
-char *
-default_homedir (void)
-{
-  char *dir;
-
-  dir = getenv("GNUPGHOME");
-#ifdef HAVE_W32_SYSTEM
-  if (!dir || !*dir)
-    dir = read_w32_registry_string (NULL, "Software\\GNU\\GnuPG", "HomeDir");
-  if (!dir || !*dir)
-    {
-      char path[MAX_PATH];
-      
-      /* It might be better to use LOCAL_APPDATA because this is
-         defined as "non roaming" and thus more likely to be kept
-         locally.  For private keys this is desired.  However, given
-         that many users copy private keys anyway forth and back,
-         using a system roaming serives might be better than to let
-         them do it manually.  A security conscious user will anyway
-         use the registry entry to have better control.  */
-      if (w32_shgetfolderpath (NULL, CSIDL_APPDATA|CSIDL_FLAG_CREATE, 
-                               NULL, 0, path) >= 0) 
-        {
-          char *tmp = xmalloc (strlen (path) + 6 +1);
-          strcpy (stpcpy (tmp, path), "\\gnupg");
-          dir = tmp;
-          
-          /* Try to create the directory if it does not yet
-             exists.  */
-          if (access (dir, F_OK))
-            CreateDirectory (dir, NULL);
-        }
-    }
-#endif /*HAVE_W32_SYSTEM*/
-  if (!dir || !*dir)
-    dir = GNUPG_HOMEDIR;
-
-  return dir;
-}
-
-
-/* Return the name of the libexec directory.  The name is allocated in
-   a static area on the first use.  This function won't fail. */
-const char *
-get_libexecdir (void)
-{
-#ifdef HAVE_W32_SYSTEM
-  static int got_dir;
-  static char dir[MAX_PATH+5];
-
-  if (!got_dir)
-    {
-      char *p;
-
-      if ( !GetModuleFileName ( NULL, dir, MAX_PATH) )
-        {
-          log_debug ("GetModuleFileName failed: %s\n", w32_strerror (0));
-          *dir = 0;
-        }
-      got_dir = 1;
-      p = strrchr (dir, DIRSEP_C);
-      if (p)
-        *p = 0;
-      else
-        {
-          log_debug ("bad filename `%s' returned for this process\n", dir);
-          *dir = 0; 
-        }
-    }
-
-  if (*dir)
-    return dir;
-  /* Fallback to the hardwired value. */
-#endif /*HAVE_W32_SYSTEM*/
-
-  return GNUPG_LIBEXECDIR;
-}
-
-/* Similar to access(2), but uses PATH to find the file.
-
-   (2006-07-08 SMS: See "vmslib/vms.c" for a VMS-specific replacement
-   function) */
-#ifndef __VMS
+/* Similar to access(2), but uses PATH to find the file. */
 int
 path_access(const char *file,int mode)
 {
@@ -1384,5 +1315,119 @@ path_access(const char *file,int mode)
 
   return ret;
 }
-#endif /*ndef __VMS*/
+
+
+
+/* Temporary helper. */
+int
+pubkey_get_npkey( int algo )
+{
+  size_t n;
+
+  if (algo == GCRY_PK_ELG_E)
+    algo = GCRY_PK_ELG;
+  if (gcry_pk_algo_info( algo, GCRYCTL_GET_ALGO_NPKEY, NULL, &n))
+    n = 0;
+  return n;
+}
+
+/* Temporary helper. */
+int
+pubkey_get_nskey( int algo )
+{
+  size_t n;
+
+  if (algo == GCRY_PK_ELG_E)
+    algo = GCRY_PK_ELG;
+  if (gcry_pk_algo_info( algo, GCRYCTL_GET_ALGO_NSKEY, NULL, &n ))
+    n = 0;
+  return n;
+}
+
+/* Temporary helper. */
+int
+pubkey_get_nsig( int algo )
+{
+  size_t n;
+
+  if (algo == GCRY_PK_ELG_E)
+    algo = GCRY_PK_ELG;
+  if (gcry_pk_algo_info( algo, GCRYCTL_GET_ALGO_NSIGN, NULL, &n))
+    n = 0;
+  return n;
+}
+
+/* Temporary helper. */
+int
+pubkey_get_nenc( int algo )
+{
+  size_t n;
+
+  if (algo == GCRY_PK_ELG_E)
+    algo = GCRY_PK_ELG;
+  if (gcry_pk_algo_info( algo, GCRYCTL_GET_ALGO_NENCR, NULL, &n ))
+    n = 0;
+  return n;
+}
+
+
+/* Temporary helper. */
+unsigned int
+pubkey_nbits( int algo, gcry_mpi_t *key )
+{
+    int rc, nbits;
+    gcry_sexp_t sexp;
+
+    if( algo == GCRY_PK_DSA ) {
+	rc = gcry_sexp_build ( &sexp, NULL,
+			      "(public-key(dsa(p%m)(q%m)(g%m)(y%m)))",
+				  key[0], key[1], key[2], key[3] );
+    }
+    else if( algo == GCRY_PK_ELG || algo == GCRY_PK_ELG_E ) {
+	rc = gcry_sexp_build ( &sexp, NULL,
+			      "(public-key(elg(p%m)(g%m)(y%m)))",
+				  key[0], key[1], key[2] );
+    }
+    else if( algo == GCRY_PK_RSA ) {
+	rc = gcry_sexp_build ( &sexp, NULL,
+			      "(public-key(rsa(n%m)(e%m)))",
+				  key[0], key[1] );
+    }
+    else
+	return 0;
+
+    if ( rc )
+	BUG ();
+
+    nbits = gcry_pk_get_nbits( sexp );
+    gcry_sexp_release( sexp );
+    return nbits;
+}
+
+
+
+/* FIXME: Use gcry_mpi_print directly. */
+int
+mpi_print( FILE *fp, gcry_mpi_t a, int mode )
+{
+    int n=0;
+
+    if( !a )
+	return fprintf(fp, "[MPI_NULL]");
+    if( !mode ) {
+	unsigned int n1;
+	n1 = gcry_mpi_get_nbits(a);
+	n += fprintf(fp, "[%u bits]", n1);
+    }
+    else {
+	unsigned char *buffer;
+
+	if (gcry_mpi_aprint (GCRYMPI_FMT_HEX, &buffer, NULL, a))
+          BUG ();
+	fputs( buffer, fp );
+	n += strlen(buffer);
+	gcry_free( buffer );
+    }
+    return n;
+}
 

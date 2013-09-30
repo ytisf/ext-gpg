@@ -24,6 +24,7 @@
 #include <types.h>
 #include "main.h"
 #include "packet.h"
+#include "../common/session-env.h"
 
 #ifndef EXTERN_UNLESS_MAIN_MODULE
 /* Norcraft can't cope with common symbols */
@@ -84,10 +85,10 @@ struct
   int completes_needed;
   int max_cert_depth;
   const char *homedir;
+  const char *agent_program; 
 
-  char *display;      /* 5 options to be passed to the gpg-agent */
-  char *ttyname;     
-  char *ttytype;
+  /* Options to be passed to the gpg-agent */
+  session_env_t session_env;
   char *lc_ctype;
   char *lc_messages;
 
@@ -113,7 +114,7 @@ struct
   int pgp2_workarounds;
   int shm_coprocess;
   const char *set_filename;
-  STRLIST comments;
+  strlist_t comments;
   int throw_keyid;
   const char *photo_viewer;
   int s2k_mode;
@@ -135,7 +136,7 @@ struct
     char *port;
     char *path;
     char *opaque;
-    STRLIST options;
+    strlist_t options;
     struct
     {
       unsigned int direct_uri:1;
@@ -147,7 +148,7 @@ struct
     unsigned int options;
     unsigned int import_options;
     unsigned int export_options;
-    STRLIST other;
+    strlist_t other;
   } keyserver_options;
   int exec_disable;
   int exec_path_set;
@@ -167,17 +168,16 @@ struct
   int interactive;
   struct notation *sig_notations;
   struct notation *cert_notations;
-  STRLIST sig_policy_url;
-  STRLIST cert_policy_url;
-  STRLIST sig_keyserver_url;
-  STRLIST cert_subpackets;
-  STRLIST sig_subpackets;
+  strlist_t sig_policy_url;
+  strlist_t cert_policy_url;
+  strlist_t sig_keyserver_url;
+  strlist_t cert_subpackets;
+  strlist_t sig_subpackets;
   int allow_non_selfsigned_uid;
   int allow_freeform_uid;
   int no_literal;
   ulong set_filesize;
   int fast_list_mode;
-  int fixed_list_mode;
   int ignore_time_conflict;
   int ignore_valid_from;
   int ignore_crc_error;
@@ -185,7 +185,7 @@ struct
   int command_fd;
   const char *override_session_key;
   int show_session_key;
-  int use_agent;
+
   const char *gpg_agent_info;
   int try_all_secrets;
   int no_expensive_trust_checks;
@@ -195,7 +195,6 @@ struct
   int preserve_permissions;
   int no_homedir_creation;
   struct groupitem *grouplist;
-  int strict;
   int mangle_dos_filenames;
   int enable_progress_filter;
   unsigned int screen_columns;
@@ -211,10 +210,10 @@ struct
   int limit_card_insert_tries; 
 
 #ifdef ENABLE_CARD_SUPPORT
+  /* FIXME: We don't needs this here as it is done in scdaemon. */
   const char *ctapi_driver; /* Library to access the ctAPI. */
   const char *pcsc_driver;  /* Library to access the PC/SC system. */
   int disable_ccid;    /* Disable the use of the internal CCID driver. */
-  int disable_keypad;  /* Do not allow the use of a keypad.  */
 #endif /*ENABLE_CARD_SUPPORT*/
 
   struct
@@ -223,6 +222,7 @@ struct
        made by signing subkeys.  If not set, a missing backsig is not
        an error (but an invalid backsig still is). */
     unsigned int require_cross_cert:1;
+
     unsigned int use_embedded_filename:1;
     unsigned int utf8_filename:1;
     unsigned int dsa2:1;
@@ -233,12 +233,20 @@ struct
      keyring. */
   struct akl
   {
-    enum {AKL_CERT, AKL_PKA, AKL_LDAP, AKL_KEYSERVER, AKL_SPEC} type;
+    enum {
+      AKL_NODEFAULT,
+      AKL_LOCAL,
+      AKL_CERT, 
+      AKL_PKA, 
+      AKL_LDAP,
+      AKL_KEYSERVER,
+      AKL_SPEC
+    } type;
     struct keyserver_spec *spec;
     struct akl *next;
   } *auto_key_locate;
 
-  int passwd_repeat;
+  int passphrase_repeat;
 } opt;
 
 /* CTRL is used to keep some global variables we currently can't
@@ -264,13 +272,29 @@ struct {
 #define DBG_EXTPROG_VALUE 1024  /* debug external program calls */
 #define DBG_CARD_IO_VALUE 2048  /* debug smart card I/O.  */
 
+/* Fixme: For now alias this value.  */
+#define DBG_ASSUAN_VALUE  DBG_EXTPROG_VALUE
+
+
+/* Tests for the debugging flags.  */
 #define DBG_PACKET (opt.debug & DBG_PACKET_VALUE)
+#define DBG_CIPHER (opt.debug & DBG_CIPHER_VALUE)
 #define DBG_FILTER (opt.debug & DBG_FILTER_VALUE)
 #define DBG_CACHE  (opt.debug & DBG_CACHE_VALUE)
 #define DBG_TRUST  (opt.debug & DBG_TRUST_VALUE)
 #define DBG_HASHING (opt.debug & DBG_HASHING_VALUE)
 #define DBG_EXTPROG (opt.debug & DBG_EXTPROG_VALUE)
 #define DBG_CARD_IO (opt.debug & DBG_CARD_IO_VALUE)
+#define DBG_ASSUAN  (opt.debug & DBG_ASSUAN_VALUE)
+
+/* FIXME: We need to check whey we did not put this into opt. */
+#define DBG_MEMORY    memory_debug_mode
+#define DBG_MEMSTAT   memory_stat_debug_mode
+
+EXTERN_UNLESS_MAIN_MODULE int memory_debug_mode;
+EXTERN_UNLESS_MAIN_MODULE int memory_stat_debug_mode;
+
+
 
 #define GNUPG   (opt.compliance==CO_GNUPG)
 #define RFC1991 (opt.compliance==CO_RFC1991 || opt.compliance==CO_PGP2)
@@ -300,6 +324,7 @@ struct {
 #define EXPORT_RESET_SUBKEY_PASSWD       (1<<3)
 #define EXPORT_MINIMAL                   (1<<4)
 #define EXPORT_CLEAN                     (1<<5)
+#define EXPORT_SEXP_FORMAT               (1<<6)
 
 #define LIST_SHOW_PHOTOS                 (1<<0)
 #define LIST_SHOW_POLICY_URLS            (1<<1)

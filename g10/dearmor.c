@@ -24,9 +24,9 @@
 #include <errno.h>
 #include <assert.h>
 
-#include "errors.h"
+#include "gpg.h"
+#include "status.h"
 #include "iobuf.h"
-#include "memory.h"
 #include "util.h"
 #include "filter.h"
 #include "packet.h"
@@ -40,12 +40,12 @@
 int
 dearmor_file( const char *fname )
 {
-    armor_filter_context_t afx;
+    armor_filter_context_t *afx;
     IOBUF inp = NULL, out = NULL;
     int rc = 0;
     int c;
 
-    memset( &afx, 0, sizeof afx);
+    afx = new_armor_context ();
 
     /* prepare iobufs */
     inp = iobuf_open(fname);
@@ -56,22 +56,19 @@ dearmor_file( const char *fname )
         errno = EPERM;
       }
     if (!inp) {
+        rc = gpg_error_from_syserror ();
 	log_error(_("can't open `%s': %s\n"), fname? fname: "[stdin]",
 					strerror(errno) );
-	rc = G10ERR_OPEN_FILE;
 	goto leave;
     }
 
-    iobuf_push_filter( inp, armor_filter, &afx );
+    push_armor_filter ( afx, inp );
 
     if( (rc = open_outfile( fname, 0, &out )) )
 	goto leave;
 
-
-
     while( (c = iobuf_get(inp)) != -1 )
 	iobuf_put( out, c );
-
 
   leave:
     if( rc )
@@ -79,6 +76,7 @@ dearmor_file( const char *fname )
     else
 	iobuf_close(out);
     iobuf_close(inp);
+    release_armor_context (afx);
     return rc;
 }
 
@@ -89,12 +87,12 @@ dearmor_file( const char *fname )
 int
 enarmor_file( const char *fname )
 {
-    armor_filter_context_t afx;
+    armor_filter_context_t *afx;
     IOBUF inp = NULL, out = NULL;
     int rc = 0;
     int c;
 
-    memset( &afx, 0, sizeof afx);
+    afx = new_armor_context ();
 
     /* prepare iobufs */
     inp = iobuf_open(fname);
@@ -105,9 +103,9 @@ enarmor_file( const char *fname )
         errno = EPERM;
       }
     if (!inp) {
+        rc = gpg_error_from_syserror ();
 	log_error(_("can't open `%s': %s\n"), fname? fname: "[stdin]",
                   strerror(errno) );
-	rc = G10ERR_OPEN_FILE;
 	goto leave;
     }
 
@@ -115,9 +113,9 @@ enarmor_file( const char *fname )
     if( (rc = open_outfile( fname, 1, &out )) )
 	goto leave;
 
-    afx.what = 4;
-    afx.hdrlines = "Comment: Use \"gpg --dearmor\" for unpacking\n";
-    iobuf_push_filter( out, armor_filter, &afx );
+    afx->what = 4;
+    afx->hdrlines = "Comment: Use \"gpg --dearmor\" for unpacking\n";
+    push_armor_filter ( afx, out );
 
     while( (c = iobuf_get(inp)) != -1 )
 	iobuf_put( out, c );
@@ -129,6 +127,7 @@ enarmor_file( const char *fname )
     else
 	iobuf_close(out);
     iobuf_close(inp);
+    release_armor_context (afx);
     return rc;
 }
 

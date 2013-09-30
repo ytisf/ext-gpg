@@ -1,13 +1,10 @@
                                                               -*- text -*-
-
-NOTE: The definitive reference is the file from the SVN trunk.
-
 Format of colon listings
 ========================
 First an example:
 
-$ gpg --fixed-list-mode --with-colons --list-keys \
-   --with-fingerprint --with-fingerprint wk@gnupg.org
+$ gpg --with-colons --list-keys \
+      --with-fingerprint --with-fingerprint wk@gnupg.org
 
 pub:f:1024:17:6C7EE1B8621CC013:899817715:1055898235::m:::scESC:
 fpr:::::::::ECAF7590EB3443B5C7CF3ACB6C7EE1B8621CC013:
@@ -19,9 +16,9 @@ sub:r:1536:20:5CE086B5B5A18FF4:899817788:1025961788:::::esc:
 fpr:::::::::AB059359A3B81F410FCFF97F5CE086B5B5A18FF4:
 
 The double --with-fingerprint prints the fingerprint for the subkeys
-too, --fixed-list-mode is themodern listing way printing dates in
+too. --fixed-list-mode is the modern listing way printing dates in
 seconds since Epoch and does not merge the first userID with the pub
-record.
+record; gpg2 does this by default and the option is a dummy.
 
 
  1. Field:  Type of record
@@ -37,12 +34,12 @@ record.
             rev = revocation signature
 	    fpr = fingerprint: (fingerprint is in field 10)
 	    pkd = public key data (special field format, see below)
-            grp = reserved for gpgsm
+            grp = keygrip
             rvk = revocation key
             tru = trust database information
             spk = signature subpacket
 
- 2. Field:  A letter describing the calculated trust. This is a single
+ 2. Field:  A letter describing the calculated validity. This is a single
 	    letter, but be prepared that additional information may follow
 	    in some future versions. (not used for secret keys)
 		o = Unknown (this key is new to the system)
@@ -51,53 +48,73 @@ record.
 		    (deprecated - use the 'D' in field 12 instead)
 		r = The key has been revoked
 		e = The key has expired
-		- = Unknown trust (i.e. no value assigned)
-		q = Undefined trust
+		- = Unknown validity (i.e. no value assigned)
+		q = Undefined validity
 	            '-' and 'q' may safely be treated as the same
 		    value for most purposes
-		n = Don't trust this key at all
-		m = There is marginal trust in this key
-		f = The key is fully trusted
-		u = The key is ultimately trusted.  This often means
+		n = The key is valid
+		m = The key is marginal valid.
+		f = The key is fully valid
+		u = The key is ultimately valid.  This often means
 		    that the secret key is available, but any key may
-		    be marked as ultimately trusted.
+		    be marked as ultimately valid.
+
+            If the validity information is given for a UID or UAT
+            record, it describes the validity calculated based on this
+            user ID.  If given for a key record it describes the best
+            validity taken from the best rated user ID.
+
+            For X.509 certificates a 'u' is used for a trusted root
+            certificate (i.e. for the trust anchor) and an 'f' for all
+            other valid certificates.
+
  3. Field:  length of key in bits.
+
  4. Field:  Algorithm:	1 = RSA
 		       16 = Elgamal (encrypt only)
 		       17 = DSA (sometimes called DH, sign only)
 		       20 = Elgamal (sign and encrypt - don't use them!)
 	    (for other id's see include/cipher.h)
+
  5. Field:  KeyID
- 6. Field:  Creation Date (in UTC).  For UID and UAT records, this is the
-            self-signature date.  Note that the dae is usally printed
-            in seconds since epoch, however, we are migrating to an ISO
-            8601 format (e.g. "19660205T091500").  This is currently
-            only relevant for X.509, A simple way to detect the format
-            is be scannning for the 'T'.
+
+ 6. Field:  Creation Date (in UTC).  For UID and UAT records, this is
+            the self-signature date.  Note that the date is usally
+            printed in seconds since epoch, however, we are migrating
+            to an ISO 8601 format (e.g. "19660205T091500").  This is
+            currently only relevant for X.509.  A simple way to detect
+            the new format is to scan for the 'T'.
+
  7. Field:  Key or user ID/user attribute expiration date or empty if none.
+
  8. Field:  Used for serial number in crt records (used to be the Local-ID).
             For UID and UAT records, this is a hash of the user ID contents
             used to represent that exact user ID.  For trust signatures,
             this is the trust depth seperated by the trust value by a
             space.
+
  9. Field:  Ownertrust (primary public keys only)
 	    This is a single letter, but be prepared that additional
 	    information may follow in some future versions.  For trust
 	    signatures with a regular expression, this is the regular
 	    expression value, quoted as in field 10.
+
 10. Field:  User-ID.  The value is quoted like a C string to avoid
 	    control characters (the colon is quoted "\x3a").
-            This is not used with --fixed-list-mode in gpg.
+            For a "pub" record this field is not used on --fixed-list-mode.
             A UAT record puts the attribute subpacket count here, a
 	    space, and then the total attribute subpacket size.
             In gpgsm the issuer name comes here
             An FPR record stores the fingerprint here.
             The fingerprint of an revocation key is stored here.
-11. Field:  Signature class.  This is a 2 digit hexnumber followed by
-            either the letter 'x' for an exportable signature or the
-            letter 'l' for a local-only signature.
-            The class byte of an revocation key is also given here,
-            'x' and 'l' ist used the same way.
+
+11. Field:  Signature class as per RFC-4880.  This is a 2 digit
+            hexnumber followed by either the letter 'x' for an
+            exportable signature or the letter 'l' for a local-only
+            signature.  The class byte of an revocation key is also
+            given here, 'x' and 'l' is used the same way.  IT is not
+            used for X.509.
+
 12. Field:  Key capabilities:
                 e = encrypt
                 s = sign
@@ -108,15 +125,17 @@ record.
 	    versions of the letters to denote the _usable_
 	    capabilities of the entire key, and a potential letter 'D'
 	    to indicate a disabled key.
-13. Field:  Used in FPR records for S/MIME keys to store the fingerprint of
-            the issuer certificate.  This is useful to build the
-            certificate path based on certificates stored in the local
-            keyDB; it is only filled if the issue certificate is
-            available. The advantage of using this value is that it is
-            guaranteed to have been been build by the same lookup
-            algorithm as gpgsm uses.
-            For "uid" recods this lists the preferences n the sameway the 
-            -edit menu does.
+
+13. Field:  Used in FPR records for S/MIME keys to store the
+            fingerprint of the issuer certificate.  This is useful to
+            build the certificate path based on certificates stored in
+            the local keyDB; it is only filled if the issuer
+            certificate is available. The root has been reached if
+            this is the same string as the fingerprint. The advantage
+            of using this value is that it is guaranteed to have been
+            been build by the same lookup algorithm as gpgsm uses.
+            For "uid" records this lists the preferences in the same
+            way the gpg's --edit-key menu does.
 	    For "sig" records, this is the fingerprint of the key that
 	    issued the signature.  Note that this is only filled in if
 	    the signature verified correctly.  Note also that for
@@ -128,6 +147,10 @@ record.
 15. Field   Used in sec/sbb to print the serial number of a token
             (internal protect mode 1002) or a '#' if that key is a
             simple stub (internal protect mode 1001)
+16. Field:  For sig records, this is the used hash algorithm:
+                2 = SHA-1
+                8 = SHA-256
+	    (for other id's see include/cipher.h)
 
 All dates are displayed in the format yyyy-mm-dd unless you use the
 option --fixed-list-mode in which case they are displayed as seconds
@@ -143,7 +166,11 @@ pkd:0:1024:B665B1435F4C2 .... FF26ABB:
     !--------- index (eg. DSA goes from 0 to 3: p,q,g,y)
 
 
-The "tru" trust database records have the fields:
+Example for a "tru" trust base record:
+
+   tru:o:0:1166697654:1:3:1:5
+
+ The fields are:
 
  2: Reason for staleness of trust.  If this field is empty, then the
     trustdb is not stale.  This field may have multiple flags in it:
@@ -161,12 +188,18 @@ The "tru" trust database records have the fields:
     GnuPG before version 1.4 used the classic trust model by default.
     GnuPG 1.4 and later uses the PGP trust model by default.
 
- 4: Date trustdb was created in seconds since 1/1/1970.
- 5: Date trustdb will expire in seconds since 1/1/1970.
+ 4: Date trustdb was created in seconds since 1970-01-01.
+ 5: Date trustdb will expire in seconds since 1970-01-01.
+ 6: Number of marginally trusted users to introduce a new key signer
+    (gpg's option --marginals-needed)
+ 7: Number of completely trusted users to introduce a new key signer.
+    (gpg's option --completes-needed)
+ 8: Maximum depth of a certification chain.
+    *gpg's option --max-cert-depth)
 
 The "spk" signature subpacket records have the fields:
 
- 2: Subpacket number as per RFC-2440 and later.
+ 2: Subpacket number as per RFC-4880 and later.
  3: Flags in hex.  Currently the only two bits assigned are 1, to
     indicate that the subpacket came from the hashed part of the
     signature, and 2, to indicate the subpacket was marked critical.
@@ -190,48 +223,63 @@ more arguments in future versions.
         is useful to define a context for parsing ERROR status
         messages.  No arguments are currently defined.
 
-    GOODSIG	<long keyid>  <username>
+    GOODSIG  <long_keyid_or_fpr>  <username>
 	The signature with the keyid is good.  For each signature only
-        one of the three codes GOODSIG, BADSIG or ERRSIG will be
-        emitted and they may be used as a marker for a new signature.
-        The username is the primary one encoded in UTF-8 and %XX
-        escaped.
+        one of the codes GOODSIG, BADSIG, EXPSIG, EXPKEYSIG, REVKEYSIG
+        or ERRSIG will be emitted.  In the past they were used as a
+        marker for a new signature; new code should use the NEWSIG
+        status instead.  The username is the primary one encoded in
+        UTF-8 and %XX escaped. The fingerprint may be used instead of
+        the long keyid if it is available.  This is the case with CMS
+        and might eventually also be available for OpenPGP.
 
-    EXPSIG	<long keyid>  <username>
+    EXPSIG  <long_keyid_or_fpr>  <username>
 	The signature with the keyid is good, but the signature is
 	expired. The username is the primary one encoded in UTF-8 and
-	%XX escaped.
+	%XX escaped. The fingerprint may be used instead of the long
+	keyid if it is available.  This is the case with CMS and might
+	eventually also be available for OpenPGP.
 
-    EXPKEYSIG	<long keyid>  <username>
-	The signature with the keyid is good, but the signature was
+    EXPKEYSIG  <long_keyid_or_fpr> <username>
+        The signature with the keyid is good, but the signature was
 	made by an expired key. The username is the primary one
-	encoded in UTF-8 and %XX escaped.
+	encoded in UTF-8 and %XX escaped.  The fingerprint may be used
+	instead of the long keyid if it is available.  This is the
+	case with CMS and might eventually also be available for
+	OpenPGP.
 
-    REVKEYSIG	<long keyid>  <username>
+    REVKEYSIG  <long_keyid_or_fpr>  <username>
 	The signature with the keyid is good, but the signature was
-	made by a revoked key. The username is the primary one
-	encoded in UTF-8 and %XX escaped.
+	made by a revoked key. The username is the primary one encoded
+	in UTF-8 and %XX escaped. The fingerprint may be used instead
+	of the long keyid if it is available.  This is the case with
+	CMS and might eventually also be available for OpenPGP.
 
-    BADSIG	<long keyid>  <username>
-	The signature with the keyid has not been verified okay.
-        The username is the primary one encoded in UTF-8 and %XX
-        escaped.
+    BADSIG  <long_keyid_or_fpr>  <username>
+	The signature with the keyid has not been verified okay.  The
+        username is the primary one encoded in UTF-8 and %XX
+        escaped. The fingerprint may be used instead of the long keyid
+        if it is available.  This is the case with CMS and might
+        eventually also be available for OpenPGP.
 
-    ERRSIG  <long keyid>  <pubkey_algo> <hash_algo> \
+    ERRSIG  <long_keyid_or_fpr>  <pubkey_algo> <hash_algo> \
 	    <sig_class> <timestamp> <rc>
 	It was not possible to check the signature.  This may be
-	caused by a missing public key or an unsupported algorithm.
-	A RC of 4 indicates unknown algorithm, a 9 indicates a missing
-	public key. The other fields give more information about
-	this signature.  sig_class is a 2 byte hex-value.
+	caused by a missing public key or an unsupported algorithm.  A
+	RC of 4 indicates unknown algorithm, a 9 indicates a missing
+	public key. The other fields give more information about this
+	signature.  sig_class is a 2 byte hex-value.  The fingerprint
+	may be used instead of the long keyid if it is available.
+	This is the case with CMS and might eventually also be
+	available for OpenPGP.
 
         Note, that TIMESTAMP may either be a number with seconds since
         epoch or an ISO 8601 string which can be detected by the
         presence of the letter 'T' inside.
 
     VALIDSIG	<fingerprint in hex> <sig_creation_date> <sig-timestamp>
-		<expire-timestamp> <sig-version> <reserved> <pubkey-algo>
-		<hash-algo> <sig-class> <primary-key-fpr>
+		<expire-timestamp>  <sig-version> <reserved> <pubkey-algo>
+		<hash-algo> <sig-class> [ <primary-key-fpr> ]
 
 	The signature with the keyid is good. This is the same as
 	GOODSIG but has the fingerprint as the argument. Both status
@@ -245,6 +293,10 @@ more arguments in future versions.
 	primary key or identical to the first argument.  This is
 	useful to get back to the primary key without running gpg
 	again for this purpose.
+
+        The primary-key-fpr parameter is used for OpenPGP and not
+        available for CMS signatures.  The sig-version as well as the
+        sig class is not defined for CMS and currently set to 0 and 00.
 
         Note, that *-TIMESTAMP may either be a number with seconds
         since epoch or an ISO 8601 string which can be detected by the
@@ -262,12 +314,12 @@ more arguments in future versions.
         since epoch or an ISO 8601 string which can be detected by the
         presence of the letter 'T' inside.
 
-
-    ENC_TO  <long keyid>  <keytype>  <keylength>
-	The message is encrypted to this keyid.
-	keytype is the numerical value of the public key algorithm,
-	keylength is the length of the key or 0 if it is not known
-	(which is currently always the case).
+    ENC_TO  <long_keyid>  <keytype>  <keylength>
+	The message is encrypted to this LONG_KEYID.  KEYTYPE is the
+	numerical value of the public key algorithm or 0 if it is not
+	known, KEYLENGTH is the length of the key or 0 if it is not
+	known (which is currently always the case).  Gpg prints this
+	line always; Gpgsm only if it knows the certificate.
 
     NODATA  <what>
 	No data has been found. Codes for what are:
@@ -280,30 +332,45 @@ more arguments in future versions.
 
     UNEXPECTED <what>
         Unexpected data has been encountered
-            0 - not further specified               1       
-  
+            0 - not further specified               1
+
 
     TRUST_UNDEFINED <error token>
-    TRUST_NEVER  <error token>
-    TRUST_MARGINAL
-    TRUST_FULLY
-    TRUST_ULTIMATE
-	For good signatures one of these status lines are emitted
-	to indicate how trustworthy the signature is.  The error token
-        values are currently only emiited by gpgsm.
+    TRUST_NEVER     <error token>
+    TRUST_MARGINAL  [0  [<validation_model>]]
+    TRUST_FULLY     [0  [<validation_model>]]
+    TRUST_ULTIMATE  [0  [<validation_model>]]
+	For good signatures one of these status lines are emitted to
+	indicate the validity of the key used to create the signature.
+	The error token values are currently only emitted by gpgsm.
+	VALIDATION_MODEL describes the algorithm used to check the
+	validity of the key.  The defaults are the standard Web of
+	Trust model for gpg and the the standard X.509 model for
+	gpgsm.  The defined values are
+
+           "pgp"   for the standard PGP WoT.
+	   "shell" for the standard X.509 model.
+	   "chain" for the chain model.
+
+        Note that we use the term "TRUST_" in the status names for
+        historic reasons; we now speak of validity.
 
     PKA_TRUST_GOOD <mailbox>
     PKA_TRUST_BAD  <mailbox>
         Depending on the outcome of the PKA check one of the above
         status codes is emitted in addition to a TRUST_* status.
-        Without PKA info available or 
+        Without PKA info available or
 
     SIGEXPIRED
 	This is deprecated in favor of KEYEXPIRED.
 
     KEYEXPIRED <expire-timestamp>
 	The key has expired.  expire-timestamp is the expiration time
-	in seconds after the epoch.
+	in seconds since Epoch.  This status line is not very useful
+	because it will also be emitted for expired subkeys even if
+	this subkey is not used.  To check whether a key used to sign
+	a message has expired, the EXPKEYSIG status line is to be
+	used.
 
         Note, that TIMESTAMP may either be a number with seconds since
         epoch or an ISO 8601 string which can be detected by the
@@ -389,7 +456,7 @@ more arguments in future versions.
           1 := Entirely new key.
           2 := New user IDs
           4 := New signatures
-          8 := New subkeys 
+          8 := New subkeys
          16 := Contains private key.
         The flags may be ORed.
 
@@ -402,7 +469,8 @@ more arguments in future versions.
           4 := "Error storing certificate".
 
     IMPORT_RES <count> <no_user_id> <imported> <imported_rsa> <unchanged>
-	<n_uids> <n_subk> <n_sigs> <n_revoc> <sec_read> <sec_imported> <sec_dups> <not_imported>
+	<n_uids> <n_subk> <n_sigs> <n_revoc> <sec_read> <sec_imported>
+        <sec_dups> <skipped_new_keys> <not_imported>
 	Final statistics on import process (this is one long line)
 
     FILE_START <what> <filename>
@@ -410,7 +478,7 @@ more arguments in future versions.
 	operation:
 	    1 - verify
             2 - encrypt
-            3 - decrypt        
+            3 - decrypt
 
     FILE_DONE
 	Marks the end of a file processing which has been started
@@ -441,8 +509,9 @@ more arguments in future versions.
 	"char" is the character displayed with no --status-fd enabled, with
 	the linefeed replaced by an 'X'.  "cur" is the current amount
 	done and "total" is amount to be done; a "total" of 0 indicates that
-	the total amount is not known.	100/100 may be used to detect the
-	end of operation.
+	the total amount is not known.	The condition
+           TOATL && CUR == TOTAL
+        may be used to detect the end of an operation.
         Well known values for WHAT:
              "pk_dsa"   - DSA key generation
              "pk_elg"   - Elgamal key generation
@@ -456,8 +525,10 @@ more arguments in future versions.
                           still working.
              "starting_agent" - A gpg-agent was started because it is not
                           running as a daemon.
+             "learncard"  Send by the agent and gpgsm while learing
+	                  the data of a smartcard.
+             "card_busy"  A smartcard is still working
 
-        
     SIG_CREATED <type> <pubkey algo> <hash algo> <class> <timestamp> <key fpr>
 	A signature has been created using these parameters.
 	    type:  'D' = detached
@@ -469,7 +540,7 @@ more arguments in future versions.
         Note, that TIMESTAMP may either be a number with seconds since
         epoch or an ISO 8601 string which can be detected by the
         presence of the letter 'T' inside.
-        
+
     KEY_CREATED <type> <fingerprint> [<handle>]
         A key has been created
             type: 'B' = primary and subkey
@@ -490,13 +561,13 @@ more arguments in future versions.
 	is used.  The format is suitable to be passed to the option
 	--override-session-key
 
-    NOTATION_NAME <name> 
+    NOTATION_NAME <name>
     NOTATION_DATA <string>
-        name and string are %XX escaped; the data may be splitted
-        among several notation_data lines.
+        name and string are %XX escaped; the data may be split
+        among several NOTATION_DATA lines.
 
     USERID_HINT <long main keyid> <string>
-        Give a hint about the user ID for a certain keyID. 
+        Give a hint about the user ID for a certain keyID.
 
     POLICY_URL <string>
         string is %XX escaped
@@ -506,7 +577,8 @@ more arguments in future versions.
         Issued by pipemode.
 
     INV_RECP <reason> <requested_recipient>
-        Issued for each unusable recipient. The reasons codes
+    INV_SGNR <reason> <requested_sender>
+        Issued for each unusable recipient/sender. The reasons codes
         currently in use are:
           0 := "No specific reason given".
           1 := "Not Found"
@@ -519,12 +591,21 @@ more arguments in future versions.
           8 := "Policy mismatch"
           9 := "Not a secret key"
 	 10 := "Key not trusted"
+         11 := "Missing certificate"
+         12 := "Missing issuer certificate"
 
-        Note that this status is also used for gpgsm's SIGNER command
-        where it relates to signer's of course.
+        Note that for historical reasons the INV_RECP status is also
+        used for gpgsm's SIGNER command where it relates to signer's
+        of course.  Newer GnuPG versions are using INV_SGNR;
+        applications should ignore the INV_RECP during the sender's
+        command processing once they have seen an INV_SGNR.  We use
+        different code so that we can distinguish them while doing an
+        encrypt+sign.
+
 
     NO_RECP <reserved>
-        Issued when no recipients are usable.
+    NO_SGNR <reserved>
+        Issued when no recipients/senders are usable.
 
     ALREADY_SIGNED <long-keyid>
         Warning: This is experimental and might be removed at any time.
@@ -533,14 +614,20 @@ more arguments in future versions.
         The output was truncated to MAXNO items.  This status code is issued
         for certain external requests
 
-    ERROR <error location> <error code> 
+    ERROR <error location> <error code> [<more>]
 
         This is a generic error status message, it might be followed
-        by error location specific data. <error token> and
-        <error_location> should not contain a space.  The error code
-        is a either a string commencing with a letter or such string
-        prefix with a numerical error code and an underscore; e.g.:
-        "151011327_EOF"
+        by error location specific data. <error code> and
+        <error_location> should not contain spaces.  The error code is
+        a either a string commencing with a letter or such a string
+        prefixed with a numerical error code and an underscore; e.g.:
+        "151011327_EOF".
+
+    SUCCESS [<location>]
+        Postive confirimation that an operation succeeded.  <location>
+        is optional but if given should not contain spaces.
+        Used only with a few commands.
+
 
     ATTRIBUTE <fpr> <octets> <type> <index> <count>
 	      <timestamp> <expiredate> <flags>
@@ -562,12 +649,12 @@ more arguments in future versions.
         This is used to control smartcard operations.
         Defined values for WHAT are:
            1 = Request insertion of a card.  Serialnumber may be given
-               to request a specific card.
-           2 = Request removal of a card.
+               to request a specific card.  Used by gpg 1.4 w/o scdaemon.
+           2 = Request removal of a card.  Used by gpg 1.4 w/o scdaemon.
            3 = Card with serialnumber detected
            4 = No card available.
            5 = No card reader available
-
+           6 = No card support available
 
     PLAINTEXT <format> <timestamp> <filename>
         This indicates the format of the plaintext that is about to be
@@ -606,6 +693,18 @@ more arguments in future versions.
         A backup key named FNAME has been created for the key with
         KEYID.
 
+    MOUNTPOINT <name>
+        NAME is a percent-plus escaped filename describing the
+        mountpoint for the current operation (e.g. g13 --mount).  This
+        may either be the specified mountpoint or one randomly choosen
+        by g13.
+
+    DECRYPTION_INFO <mdc_method> <sym_algo>
+        Print information about the symmetric encryption algorithm and
+        the MDC method.  This will be emitted even if the decryption
+        fails.
+
+
 
 Format of the "--attribute-fd" output
 =====================================
@@ -616,7 +715,7 @@ descriptor specified.  --attribute-fd is intended for use with
 --status-fd as part of the required information is carried on the
 ATTRIBUTE status tag (see above).
 
-The contents of the attribute data is specified by 2440bis, but for
+The contents of the attribute data is specified by RFC 4880.  For
 convenience, here is the Photo ID format, as it is currently the only
 attribute defined:
 
@@ -649,25 +748,27 @@ version: the third field contains the version of GnuPG.
 
 pubkey: the third field contains the public key algorithmdcaiphers
 	this version of GnuPG supports, separated by semicolons.  The
-	algorithm numbers are as specified in RFC-2440.
+	algorithm numbers are as specified in RFC-4880.  Note that in
+	contrast to the --status-fd interface these are _not_ the
+	Libgcrypt identifiers.
 
    cfg:pubkey:1;2;3;16;17
 
 cipher: the third field contains the symmetric ciphers this version of
 	GnuPG supports, separated by semicolons.  The cipher numbers
-	are as specified in RFC-2440.
+	are as specified in RFC-4880.
 
    cfg:cipher:2;3;4;7;8;9;10
 
 digest: the third field contains the digest (hash) algorithms this
 	version of GnuPG supports, separated by semicolons.  The
-	digest numbers are as specified in RFC-2440.
+	digest numbers are as specified in RFC-4880.
 
    cfg:digest:1;2;3;8;9;10
 
 compress: the third field contains the compression algorithms this
 	  version of GnuPG supports, separated by semicolons.  The
-	  algorithm numbers are as specified in RFC-2440.
+	  algorithm numbers are as specified in RFC-4880.
 
    cfg:compress:0;1;2;3
 
@@ -684,33 +785,7 @@ would result in:
 
 Key generation
 ==============
-    Key generation shows progress by printing different characters to
-    stderr:
-	     "."  Last 10 Miller-Rabin tests failed
-	     "+"  Miller-Rabin test succeeded
-	     "!"  Reloading the pool with fresh prime numbers
-	     "^"  Checking a new value for the generator
-	     "<"  Size of one factor decreased
-	     ">"  Size of one factor increased
-
-    The prime number for Elgamal is generated this way:
-
-    1) Make a prime number q of 160, 200, 240 bits (depending on the keysize)
-    2) Select the length of the other prime factors to be at least the size
-       of q and calculate the number of prime factors needed
-    3) Make a pool of prime numbers, each of the length determined in step 2
-    4) Get a new permutation out of the pool or continue with step 3
-       if we have tested all permutations.
-    5) Calculate a candidate prime p = 2 * q * p[1] * ... * p[n] + 1
-    6) Check that this prime has the correct length (this may change q if
-       it seems not to be possible to make a prime of the desired length)
-    7) Check whether this is a prime using trial divisions and the
-       Miller-Rabin test.
-    8) Continue with step 4 if we did not find a prime in step 7.
-    9) Find a generator for that prime.
-
-    This algorithm is based on Lim and Lee's suggestion from the
-    Crypto '97 proceedings p. 260.
+    See the Libcrypt manual.
 
 
 Unattended key generation
@@ -752,18 +827,45 @@ The format of this file is as follows:
 	The filename is used until a new filename is used (at commit points)
 	and all keys are written to that file.	If a new filename is given,
 	this file is created (and overwrites an existing one).
-	Both control statements must be given.
+        GnuPG < 2.1:  Both control statements must be given.
+        GnuPG >= 2.1: "%secring" is now a no-op.
+    %ask-passphrase
+        Enable a mode where the command "passphrase" is ignored and
+        instead the usual passphrase dialog is used.  This does not
+        make sense for batch key generation; however the unattended
+        key generation feature is also used by GUIs and this feature
+        relinquishes the GUI from implementing its own passphrase
+        entry code.  This is a global option.
+    %no-ask-passphrase
+        Disable the ask-passphrase mode.
+    %no-protection
+        With GnuPG 2.1 it is not anymore possible to specify a
+        passphrase for unattended key generation.  The passphrase
+        command is simply ignored and %ask-passpharse is thus
+        implicitly enabled.  Using this option allows to the creation
+        of keys without any passphrases.  This option is mainly
+        intended for regression tests.
+    %transient-key
+        If given the keys are created using a faster and a somewhat
+        less secure random number generator.  This option may be used
+        for keys which are only used for a short time and do not
+        require full cryptographic strength.  It takes only effect if
+        used together with the option no-protection.
+
    o The order of the parameters does not matter except for "Key-Type"
      which must be the first parameter.  The parameters are only for the
      generated keyblock and parameters from previous key generations are not
      used. Some syntactically checks may be performed.
      The currently defined parameters are:
      Key-Type: <algo-number>|<algo-string>
-	Starts a new parameter block by giving the type of the
-	primary key. The algorithm must be capable of signing.
-	This is a required parameter.
+	Starts a new parameter block by giving the type of the primary
+	key. The algorithm must be capable of signing.  This is a
+	required parameter.  It may be "default" to use the default
+	one; in this case don't give a Key-Usage and use "default" for
+	the Subkey-Type.
      Key-Length: <length-in-bits>
-	Length of the key in bits.  Default is 1024.
+	Length of the key in bits.  The default is returned by running
+        the command "gpg --gpgconf-list".
      Key-Usage: <usage-list>
         Space or comma delimited list of key usage, allowed values are
         "encrypt", "sign", and "auth".  This is used to generate the
@@ -771,13 +873,15 @@ The format of this file is as follows:
         this usage.  Note that OpenPGP requires that all primary keys
         are capable of certification, so no matter what usage is given
         here, the "cert" flag will be on.  If no Key-Usage is
-        specified, all the allowed usages for that particular
-        algorithm are used.
+        specified and the key-type is not "default", all allowed
+        usages for that particular algorithm are used; if it is not
+        given but "default" is used the usage will be "sign".
      Subkey-Type: <algo-number>|<algo-string>
 	This generates a secondary key.  Currently only one subkey
-	can be handled.
+	can be handled.  "default" is also supported.
      Subkey-Length: <length-in-bits>
-	Length of the subkey in bits.  Default is 1024.
+	Length of the subkey in bits.  The default is returned by running
+        the command "gpg --gpgconf-list".
      Subkey-Usage: <usage-list>
         Similar to Key-Usage.
      Passphrase: <string>
@@ -789,10 +893,23 @@ The format of this file is as follows:
 	The 3 parts of a key. Remember to use UTF-8 here.
 	If you don't give any of them, no user ID is created.
      Expire-Date: <iso-date>|(<number>[d|w|m|y])
-	Set the expiration date for the key (and the subkey).  It
-	may either be entered in ISO date format (2000-08-15) or as
-	number of days, weeks, month or years. Without a letter days
-	are assumed.
+	Set the expiration date for the key (and the subkey).  It may
+	either be entered in ISO date format (2000-08-15) or as number
+	of days, weeks, month or years.  The special notation
+	"seconds=N" is also allowed to directly give an Epoch
+	value. Without a letter days are assumed.  Note that there is
+	no check done on the overflow of the type used by OpenPGP for
+	timestamps.  Thus you better make sure that the given value
+	make sense.  Although OpenPGP works with time intervals, GnuPG
+	uses an absolute value internally and thus the last year we
+	can represent is 2105.
+     Creation-Date: <iso-date>
+        Set the creation date of the key as stored in the key
+        information and which is also part of the fingerprint
+        calculation.  Either a date like "1986-04-26" or a full
+        timestamp like "19860426T042640" may be used.  The time is
+        considered to be UTC.  If it is not given the current time
+        is used.
      Preferences: <string>
         Set the cipher, hash, and compression preference values for
 	this key.  This expects the same type of string as "setpref"
@@ -815,9 +932,9 @@ The format of this file is as follows:
         keyserver URL for the key.
 
 
-Here is an example:
+Here is an example on how to create a key:
 $ cat >foo <<EOF
-     %echo Generating a standard key
+     %echo Generating a basic OpenPGP key
      Key-Type: DSA
      Key-Length: 1024
      Subkey-Type: ELG-E
@@ -841,6 +958,24 @@ $ gpg --no-default-keyring --secret-keyring ./foo.sec \
 ------------------------------------------
 sec  1024D/915A878D 2000-03-09 Joe Tester (with stupid passphrase) <joe@foo.bar>
 ssb  1024g/8F70E2C0 2000-03-09
+
+If you want to create a key with the default algorithms you would
+use these parameters:
+
+     %echo Generating a default key
+     Key-Type: default
+     Subkey-Type: default
+     Name-Real: Joe Tester
+     Name-Comment: with stupid passphrase
+     Name-Email: joe@foo.bar
+     Expire-Date: 0
+     Passphrase: abc
+     %pubring foo.pub
+     %secring foo.sec
+     # Do a commit here, so that we can later print "done" :-)
+     %commit
+     %echo done
+
 
 
 
@@ -1055,59 +1190,6 @@ FIXME:  The layout changed, document it here.
 
 
 
-Packet Headers
-===============
-
-GNUPG uses PGP 2 packet headers and also understands OpenPGP packet header.
-There is one enhancement used with the old style packet headers:
-
-   CTB bits 10, the "packet-length length bits", have values listed in
-   the following table:
-
-      00 - 1-byte packet-length field
-      01 - 2-byte packet-length field
-      10 - 4-byte packet-length field
-      11 - no packet length supplied, unknown packet length
-
-   As indicated in this table, depending on the packet-length length
-   bits, the remaining 1, 2, 4, or 0 bytes of the packet structure field
-   are a "packet-length field".  The packet-length field is a whole
-   number field.  The value of the packet-length field is defined to be
-   the value of the whole number field.
-
-   A value of 11 is currently used in one place: on compressed data.
-   That is, a compressed data block currently looks like <A3 01 . .  .>,
-   where <A3>, binary 10 1000 11, is an indefinite-length packet. The
-   proper interpretation is "until the end of the enclosing structure",
-   although it should never appear outermost (where the enclosing
-   structure is a file).
-
-+  This will be changed with another version, where the new meaning of
-+  the value 11 (see below) will also take place.
-+
-+  A value of 11 for other packets enables a special length encoding,
-+  which is used in case, where the length of the following packet can
-+  not be determined prior to writing the packet; especially this will
-+  be used if large amounts of data are processed in filter mode.
-+
-+  It works like this: After the CTB (with a length field of 11) a
-+  marker field is used, which gives the length of the following datablock.
-+  This is a simple 2 byte field (MSB first) containing the amount of data
-+  following this field, not including this length field. After this datablock
-+  another length field follows, which gives the size of the next datablock.
-+  A value of 0 indicates the end of the packet. The maximum size of a
-+  data block is limited to 65534, thereby reserving a value of 0xffff for
-+  future extensions. These length markers must be inserted into the data
-+  stream just before writing the data out.
-+
-+  This 2 byte field is large enough, because the application must buffer
-+  this amount of data to prepend the length marker before writing it out.
-+  Data block sizes larger than about 32k doesn't make any sense. Note
-+  that this may also be used for compressed data streams, but we must use
-+  another packet version to tell the application that it can not assume,
-+  that this is the last packet.
-
-
 GNU extensions to the S2K algorithm
 ===================================
 S2K mode 101 is used to identify these extensions.
@@ -1116,43 +1198,6 @@ clear that these are extensions for GNU, the next bytes gives the
 GNU protection mode - 1000.  Defined modes are:
   1001 - do not store the secret part at all
   1002 - a stub to access smartcards (not used in 1.2.x)
-
-
-Pipemode
-========
-NOTE:  This is deprecated and will be removed in future versions.
-
-This mode can be used to perform multiple operations with one call to
-gpg. It comes handy in cases where you have to verify a lot of
-signatures. Currently we support only detached signatures.  This mode
-is a kludge to avoid running gpg n daemon mode and using Unix Domain
-Sockets to pass the data to it.  There is no easy portable way to do
-this under Windows, so we use plain old pipes which do work well under
-Windows.  Because there is no way to signal multiple EOFs in a pipe we
-have to embed control commands in the data stream: We distinguish
-between a data state and a control state.  Initially the system is in
-data state but it won't accept any data.  Instead it waits for
-transition to control state which is done by sending a single '@'
-character.  While in control state the control command os expected and
-this command is just a single byte after which the system falls back
-to data state (but does not necesary accept data now).  The simplest
-control command is a '@' which just inserts this character into the
-data stream.
-
-Here is the format we use for detached signatures:
-"@<"  - Begin of new stream
-"@B"  - Detached signature follows.
-        This emits a control packet (1,'B')
-<detached_signature>
-"@t"  - Signed text follows. 
-        This emits the control packet (2, 'B')
-<signed_text>
-"@."  - End of operation. The final control packet forces signature
-        verification
-"@>"  - End of stream   
-
-
-
 
 
 
@@ -1169,8 +1214,13 @@ Other Notes
       to keep them small.
 
 
+OIDs below the GnuPG arc:
+=========================
 
-
+ 1.3.6.1.4.1.11591.2          GnuPG
+ 1.3.6.1.4.1.11591.2.1          notation
+ 1.3.6.1.4.1.11591.2.1.1          pkaAddress
+ 1.3.6.1.4.1.11591.2.12242973   invalid encoded OID
 
 
 

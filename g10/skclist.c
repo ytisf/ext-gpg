@@ -1,5 +1,5 @@
-/* skclist.c
- * Copyright (C) 1998, 1999, 2000, 2001 Free Software Foundation, Inc.
+/* skclist.c - Build a list of secret keys
+ * Copyright (C) 1998, 1999, 2000, 2001, 2006 Free Software Foundation, Inc.
  *
  * This file is part of GnuPG.
  *
@@ -24,14 +24,26 @@
 #include <errno.h>
 #include <assert.h>
 
+#include "gpg.h"
 #include "options.h"
 #include "packet.h"
-#include "errors.h"
+#include "status.h"
 #include "keydb.h"
-#include "memory.h"
 #include "util.h"
 #include "i18n.h"
 #include "cipher.h"
+
+#ifndef GCRYCTL_FAKED_RANDOM_P
+#define GCRYCTL_FAKED_RANDOM_P 51
+#endif
+
+/* Return true if Libgcrypt's RNG is in faked mode.  */
+int
+random_is_faked (void)
+{
+  return !!gcry_control ( GCRYCTL_FAKED_RANDOM_P, 0);
+}
+
 
 
 void
@@ -90,7 +102,7 @@ key_present_in_sk_list(SK_LIST sk_list, PKT_secret_key *sk)
 }
 
 static int
-is_duplicated_entry (STRLIST list, STRLIST item)
+is_duplicated_entry (strlist_t list, strlist_t item)
 {
     for(; list && list != item; list = list->next) {
         if ( !strcmp (list->d, item->d) )
@@ -101,7 +113,7 @@ is_duplicated_entry (STRLIST list, STRLIST item)
 
 
 int
-build_sk_list( STRLIST locusr, SK_LIST *ret_sk_list,
+build_sk_list( strlist_t locusr, SK_LIST *ret_sk_list,
                int unlock, unsigned int use )
 {
     SK_LIST sk_list = NULL;
@@ -116,8 +128,10 @@ build_sk_list( STRLIST locusr, SK_LIST *ret_sk_list,
 	if( (rc = get_seckey_byname( sk, NULL, unlock )) ) {
 	  free_secret_key( sk ); sk = NULL;
 	  log_error("no default secret key: %s\n", g10_errstr(rc) );
+          write_status_text (STATUS_INV_SGNR,
+                             get_inv_recpsgnr_code (GPG_ERR_NO_SECKEY));
 	}
-	else if( !(rc=check_pubkey_algo2(sk->pubkey_algo, use)) )
+	else if( !(rc=openpgp_pk_test_algo2 (sk->pubkey_algo, use)) )
 	  {
 	    SK_LIST r;
 
@@ -126,6 +140,8 @@ build_sk_list( STRLIST locusr, SK_LIST *ret_sk_list,
 		log_info(_("key is not flagged as insecure - "
 			   "can't use it with the faked RNG!\n"));
 		free_secret_key( sk ); sk = NULL;
+                write_status_text (STATUS_INV_SGNR, 
+                                   get_inv_recpsgnr_code (GPG_ERR_NOT_TRUSTED));
 	      }
 	    else
 	      {
@@ -140,10 +156,11 @@ build_sk_list( STRLIST locusr, SK_LIST *ret_sk_list,
 	  {
 	    free_secret_key( sk ); sk = NULL;
 	    log_error("invalid default secret key: %s\n", g10_errstr(rc) );
+            write_status_text (STATUS_INV_SGNR, get_inv_recpsgnr_code (rc));
 	  }
       }
     else {
-        STRLIST locusr_orig = locusr;
+        strlist_t locusr_orig = locusr;
 	for(; locusr; locusr = locusr->next ) {
 	    PKT_secret_key *sk;
             
@@ -164,6 +181,9 @@ build_sk_list( STRLIST locusr, SK_LIST *ret_sk_list,
 		free_secret_key( sk ); sk = NULL;
 		log_error(_("skipped \"%s\": %s\n"),
 			  locusr->d, g10_errstr(rc) );
+                write_status_text_and_buffer 
+                  (STATUS_INV_SGNR, get_inv_recpsgnr_code (rc), 
+                   locusr->d, strlen (locusr->d), -1);
 	      }
             else if ( key_present_in_sk_list(sk_list, sk) == 0) {
                 free_secret_key(sk); sk = NULL;
@@ -174,8 +194,11 @@ build_sk_list( STRLIST locusr, SK_LIST *ret_sk_list,
 		free_secret_key( sk ); sk = NULL;
 		log_error(_("skipped \"%s\": %s\n"),
 			  locusr->d, g10_errstr(rc) );
+                write_status_text_and_buffer 
+                  (STATUS_INV_SGNR, get_inv_recpsgnr_code (rc), 
+                   locusr->d, strlen (locusr->d), -1);
 	      }
-	    else if( !(rc=check_pubkey_algo2(sk->pubkey_algo, use)) ) {
+	    else if( !(rc=openpgp_pk_test_algo2 (sk->pubkey_algo, use)) ) {
 		SK_LIST r;
 
 		if( sk->version == 4 && (use & PUBKEY_USAGE_SIG)
@@ -185,11 +208,19 @@ build_sk_list( STRLIST locusr, SK_LIST *ret_sk_list,
 			     _("this is a PGP generated Elgamal key which"
 			       " is not secure for signatures!"));
 		    free_secret_key( sk ); sk = NULL;
+                    write_status_text_and_buffer 
+                      (STATUS_INV_SGNR, 
+                       get_inv_recpsgnr_code (GPG_ERR_WRONG_KEY_USAGE), 
+                       locusr->d, strlen (locusr->d), -1);
 		  }
 		else if( random_is_faked() && !is_insecure( sk ) ) {
 		    log_info(_("key is not flagged as insecure - "
 			       "can't use it with the faked RNG!\n"));
 		    free_secret_key( sk ); sk = NULL;
+                    write_status_text_and_buffer 
+                      (STATUS_INV_SGNR, 
+                       get_inv_recpsgnr_code (GPG_ERR_NOT_TRUSTED), 
+                       locusr->d, strlen (locusr->d), -1);
 		}
 		else {
 		    r = xmalloc( sizeof *r );
@@ -202,6 +233,9 @@ build_sk_list( STRLIST locusr, SK_LIST *ret_sk_list,
 	    else {
 		free_secret_key( sk ); sk = NULL;
 		log_error("skipped \"%s\": %s\n", locusr->d, g10_errstr(rc) );
+                write_status_text_and_buffer 
+                  (STATUS_INV_SGNR, get_inv_recpsgnr_code (rc), 
+                   locusr->d, strlen (locusr->d), -1);
 	    }
 	}
     }
@@ -209,6 +243,7 @@ build_sk_list( STRLIST locusr, SK_LIST *ret_sk_list,
 
     if( !rc && !sk_list ) {
 	log_error("no valid signators\n");
+        write_status_text (STATUS_NO_SGNR, "0");
 	rc = G10ERR_NO_USER_ID;
     }
 

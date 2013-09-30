@@ -1,6 +1,6 @@
 /* delkey.c - delete keys
  * Copyright (C) 1998, 1999, 2000, 2001, 2002, 2004,
- *               2005 Free Software Foundation, Inc.
+ *               2005, 2006 Free Software Foundation, Inc.
  *
  * This file is part of GnuPG.
  *
@@ -26,12 +26,12 @@
 #include <assert.h>
 #include <ctype.h>
 
+#include "gpg.h"
 #include "options.h"
 #include "packet.h"
-#include "errors.h"
+#include "status.h"
 #include "iobuf.h"
 #include "keydb.h"
-#include "memory.h"
 #include "util.h"
 #include "main.h"
 #include "trustdb.h"
@@ -184,7 +184,7 @@ do_delete_key( const char *username, int secret, int force, int *r_sec_avail )
  * Delete a public or secret key from a keyring.
  */
 int
-delete_keys( STRLIST names, int secret, int allow_both )
+delete_keys( strlist_t names, int secret, int allow_both )
 {
     int rc, avail, force=(!allow_both && !secret && opt.expert);
 

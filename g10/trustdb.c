@@ -26,17 +26,13 @@
 
 #ifndef DISABLE_REGEX
 #include <sys/types.h>
-#ifdef USE_INTERNAL_REGEX
-#include "_regex.h"
-#else
 #include <regex.h>
-#endif
 #endif /* !DISABLE_REGEX */
 
-#include "errors.h"
+#include "gpg.h"
+#include "status.h"
 #include "iobuf.h"
 #include "keydb.h"
-#include "memory.h"
 #include "util.h"
 #include "options.h"
 #include "packet.h"
@@ -509,7 +505,11 @@ trust_letter (unsigned int value)
     }
 }
 
-/* NOTE TO TRANSLATOR: these strings are similar to those in
+const char *
+uid_trust_string_fixed(PKT_public_key *key,PKT_user_id *uid)
+{
+  if(!key && !uid)
+/* TRANSLATORS: these strings are similar to those in
    trust_value_to_string(), but are a fixed length.  This is needed to
    make attractive information listings where columns line up
    properly.  The value "10" should be the length of the strings you
@@ -517,10 +517,6 @@ trust_letter (unsigned int value)
    It gets passed to atoi() so everything after the number is
    essentially a comment and need not be translated.  Either key and
    uid are both NULL, or neither are NULL. */
-const char *
-uid_trust_string_fixed(PKT_public_key *key,PKT_user_id *uid)
-{
-  if(!key && !uid)
     return _("10 translator see trustdb.c:uid_trust_string_fixed");
   else if(uid->is_revoked || (key && key->is_revoked))
     return                         _("[ revoked]");
@@ -1184,15 +1180,15 @@ get_validity (PKT_public_key *pk, PKT_user_id *uid)
 int
 get_validity_info (PKT_public_key *pk, PKT_user_id *uid)
 {
-    int trustlevel;
-
-    if (!pk)
-      return '?';  /* Just in case a NULL PK is passed.  */
-
-    trustlevel = get_validity (pk, uid);
-    if( trustlevel & TRUST_FLAG_REVOKED )
-	return 'r';
-    return trust_letter ( trustlevel );
+  int trustlevel;
+  
+  if (!pk)
+    return '?';  /* Just in case a NULL PK is passed.  */
+  
+  trustlevel = get_validity (pk, uid);
+  if ( (trustlevel & TRUST_FLAG_REVOKED) )
+    return 'r';
+  return trust_letter (trustlevel);
 }
 
 const char *
@@ -1248,6 +1244,7 @@ get_validity_counts (PKT_public_key *pk, PKT_user_id *uid)
 void
 list_trust_path( const char *username )
 {
+  (void)username;
 }
 
 /****************
@@ -1272,7 +1269,11 @@ int
 enum_cert_paths( void **context, ulong *lid,
 		 unsigned *ownertrust, unsigned *validity )
 {
-    return -1;
+  (void)context;
+  (void)lid;
+  (void)ownertrust;
+  (void)validity;
+  return -1;
 }
 
 
@@ -1280,10 +1281,13 @@ enum_cert_paths( void **context, ulong *lid,
  * Print the current path
  */
 void
-enum_cert_paths_print( void **context, FILE *fp,
-				       int refresh, ulong selected_lid )
+enum_cert_paths_print (void **context, FILE *fp,
+                       int refresh, ulong selected_lid)
 {
-    return;
+  (void)context;
+  (void)fp;
+  (void)refresh;
+  (void)selected_lid;
 }
 
 
@@ -1782,6 +1786,7 @@ clean_key(KBNODE keyblock,int noisy,int self_only,
 
 /* Returns a sanitized copy of the regexp (which might be "", but not
    NULL). */
+#ifndef DISABLE_REGEX
 static char *
 sanitize_regexp(const char *old)
 {
@@ -1842,6 +1847,7 @@ sanitize_regexp(const char *old)
 
   return new;
 }
+#endif /*!DISABLE_REGEX*/
 
 /* Used by validate_one_keyblock to confirm a regexp within a trust
    signature.  Returns 1 for match, and 0 for no match or regex
@@ -1960,20 +1966,22 @@ validate_one_keyblock (KBNODE kb, struct key_item *klist,
              did not exist.  This is safe for non-trust sigs as well
              since we don't accept a regexp on the sig unless it's a
              trust sig. */
-          if (kr && (kr->trust_regexp==NULL || opt.trust_model!=TM_PGP ||
-		     (uidnode && check_regexp(kr->trust_regexp,
-					    uidnode->pkt->pkt.user_id->name))))
+          if (kr && (!kr->trust_regexp 
+                     || opt.trust_model != TM_PGP 
+                     || (uidnode 
+                         && check_regexp(kr->trust_regexp,
+                                         uidnode->pkt->pkt.user_id->name))))
             {
 	      /* Are we part of a trust sig chain?  We always favor
                  the latest trust sig, rather than the greater or
                  lesser trust sig or value.  I could make a decent
                  argument for any of these cases, but this seems to be
                  what PGP does, and I'd like to be compatible. -dms */
-	      if(opt.trust_model==TM_PGP
-		 && sig->trust_depth
-		 && pk->trust_timestamp<=sig->timestamp)
+              if (opt.trust_model == TM_PGP
+                  && sig->trust_depth
+                  && pk->trust_timestamp <= sig->timestamp)
 		{
-		  byte depth;
+		  unsigned char depth;
 
 		  /* If the depth on the signature is less than the
 		     chain currently has, then use the signature depth
@@ -1985,20 +1993,20 @@ validate_one_keyblock (KBNODE kb, struct key_item *klist,
 		     trusted signature can restart the depth to
 		     whatever level it likes. */
 
-		  if(sig->trust_depth<kr->trust_depth
-		     || kr->ownertrust==TRUST_ULTIMATE)
-		    depth=sig->trust_depth;
+		  if (sig->trust_depth < kr->trust_depth
+                      || kr->ownertrust == TRUST_ULTIMATE)
+		    depth = sig->trust_depth;
 		  else
-		    depth=kr->trust_depth;
+		    depth = kr->trust_depth;
 
-		  if(depth)
+		  if (depth)
 		    {
 		      if(DBG_TRUST)
-			log_debug("trust sig on %s, sig depth is %d,"
-				  " kr depth is %d\n",
-				  uidnode->pkt->pkt.user_id->name,
-				  sig->trust_depth,
-				  kr->trust_depth);
+			log_debug ("trust sig on %s, sig depth is %d,"
+                                   " kr depth is %d\n",
+                                   uidnode->pkt->pkt.user_id->name,
+                                   sig->trust_depth,
+                                   kr->trust_depth);
 
 		      /* If we got here, we know that:
 
@@ -2016,19 +2024,19 @@ validate_one_keyblock (KBNODE kb, struct key_item *klist,
 			 successfully.
 		      */
 
-		      if(DBG_TRUST)
-			log_debug("replacing trust value %d with %d and "
-				  "depth %d with %d\n",
-				  pk->trust_value,sig->trust_value,
-				  pk->trust_depth,depth);
+		      if (DBG_TRUST)
+			log_debug ("replacing trust value %d with %d and "
+                                   "depth %d with %d\n",
+                                   pk->trust_value,sig->trust_value,
+                                   pk->trust_depth,depth);
 
-		      pk->trust_value=sig->trust_value;
-		      pk->trust_depth=depth-1;
-
+		      pk->trust_value = sig->trust_value;
+		      pk->trust_depth = depth-1;
+                      
 		      /* If the trust sig contains a regexp, record it
 			 on the pk for the next round. */
-		      if(sig->trust_regexp)
-			pk->trust_regexp=sig->trust_regexp;
+		      if (sig->trust_regexp)
+			pk->trust_regexp = sig->trust_regexp;
 		    }
 		}
 
@@ -2061,6 +2069,7 @@ validate_one_keyblock (KBNODE kb, struct key_item *klist,
 static int
 search_skipfnc (void *opaque, u32 *kid, PKT_user_id *dummy)
 {
+  (void)dummy;
   return test_key_hash_table ((KeyHashTable)opaque, kid);
 }
 
@@ -2347,7 +2356,7 @@ validate_keys (int interactive)
 	    {
 	      k->ownertrust = ask_ownertrust (k->kid,min);
 
-	      if (k->ownertrust == (unsigned int)(-1))
+	      if (k->ownertrust == -1)
 		{
 		  quit=1;
 		  goto leave;

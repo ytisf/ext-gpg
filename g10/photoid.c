@@ -21,12 +21,17 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
-#ifdef _WIN32 
+#ifdef _WIN32
+# ifdef HAVE_WINSOCK2_H
+#  include <winsock2.h>
+# endif
 # include <windows.h>
 # ifndef VER_PLATFORM_WIN32_WINDOWS
 #  define VER_PLATFORM_WIN32_WINDOWS 1
 # endif
 #endif
+
+#include "gpg.h"
 #include "packet.h"
 #include "status.h"
 #include "exec.h"
@@ -34,14 +39,14 @@
 #include "util.h"
 #include "i18n.h"
 #include "iobuf.h"
-#include "memory.h"
 #include "options.h"
 #include "main.h"
 #include "photoid.h"
 #include "ttyio.h"
 #include "trustdb.h"
 
-/* Generate a new photo id packet, or return NULL if canceled */
+/* Generate a new photo id packet, or return NULL if canceled.
+   FIXME:  Should we add a duplicates check similar to generate_user_id? */
 PKT_user_id *
 generate_photo_id(PKT_public_key *pk,const char *photo_name)
 {
@@ -119,7 +124,7 @@ generate_photo_id(PKT_public_key *pk,const char *photo_name)
 	  continue;
 	}
 
-      
+
       len=iobuf_get_filelength(file, &overflow);
       if(len>6144 || overflow)
 	{
@@ -193,8 +198,7 @@ generate_photo_id(PKT_public_key *pk,const char *photo_name)
 }
 
 /* Returns 0 for error, 1 for valid */
-int 
-parse_image_header(const struct user_attribute *attr,byte *type,u32 *len)
+int parse_image_header(const struct user_attribute *attr,byte *type,u32 *len)
 {
   u16 headerlen;
 
@@ -229,8 +233,7 @@ parse_image_header(const struct user_attribute *attr,byte *type,u32 *len)
    make sure it is not too big (see parse-packet.c:parse_attribute).
    Extensions should be 3 characters long for the best cross-platform
    compatibility. */
-char *
-image_type_to_string(byte type,int style)
+char *image_type_to_string(byte type,int style)
 {
   char *string;
 
@@ -259,8 +262,7 @@ image_type_to_string(byte type,int style)
 }
 
 #if !defined(FIXED_PHOTO_VIEWER) && !defined(DISABLE_PHOTO_VIEWER)
-static const char *
-get_default_photo_command(void)
+static const char *get_default_photo_command(void)
 {
 #if defined(_WIN32)
   OSVERSIONINFO osvi;
@@ -279,14 +281,7 @@ get_default_photo_command(void)
 #elif defined(__riscos__)
   return "Filer_Run %I";
 #else
-  if(path_access("xloadimage",X_OK)==0)
-    return "xloadimage -fork -quiet -title 'KeyID 0x%k' stdin";
-  else if(path_access("eog",X_OK)==0)
-    return "eog %i";
-  else if(path_access("display",X_OK)==0)
-    return "display -title 'KeyID 0x%k' %i";
-  else
-    return "";
+  return "xloadimage -fork -quiet -title 'KeyID 0x%k' stdin";
 #endif
 }
 #endif
@@ -327,12 +322,6 @@ show_photos(const struct user_attribute *attrs,
 	if(!opt.photo_viewer)
 	  opt.photo_viewer=get_default_photo_command();
 #endif
-
-	if(!*opt.photo_viewer)
-	  {
-	    log_info(_("no photo viewer set\n"));
-	    goto fail;
-	  }
 
 	/* make command grow */
 	command=pct_expando(opt.photo_viewer,&args);

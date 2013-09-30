@@ -1,6 +1,6 @@
 /* keyserver.c - generic keyserver code
  * Copyright (C) 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008,
- *               2009 Free Software Foundation, Inc.
+ *               2009, 2012 Free Software Foundation, Inc.
  *
  * This file is part of GnuPG.
  *
@@ -24,20 +24,24 @@
 #include <string.h>
 #include <stdlib.h>
 #include <assert.h>
+#include <errno.h>
+
+#include "gpg.h"
+#include "iobuf.h"
 #include "filter.h"
 #include "keydb.h"
 #include "status.h"
 #include "exec.h"
 #include "main.h"
 #include "i18n.h"
-#include "iobuf.h"
-#include "memory.h"
 #include "ttyio.h"
 #include "options.h"
 #include "packet.h"
 #include "trustdb.h"
 #include "keyserver-internal.h"
 #include "util.h"
+#include "dns-cert.h"
+#include "pka.h"
 #ifdef USE_DNS_SRV
 #include "srv.h"
 #endif
@@ -84,7 +88,7 @@ static struct parse_options keyserver_opts[]=
     {NULL,0,NULL,NULL}
   };
 
-static int keyserver_work(enum ks_action action,STRLIST list,
+static int keyserver_work(enum ks_action action,strlist_t list,
 			  KEYDB_SEARCH_DESC *desc,int count,
 			  unsigned char **fpr,size_t *fpr_len,
 			  struct keyserver_spec *keyserver);
@@ -95,7 +99,7 @@ static int keyserver_work(enum ks_action action,STRLIST list,
 static size_t max_cert_size=DEFAULT_MAX_CERT_SIZE;
 
 static void
-add_canonical_option(char *option,STRLIST *list)
+add_canonical_option(char *option,strlist_t *list)
 {
   char *arg=argsplit(option);
 
@@ -329,7 +333,15 @@ parse_keyserver_uri(const char *string,int require_scheme,
       keyserver->scheme=xstrdup("hkp");
     }
 
-  if(assume_hkp || (uri[0]=='/' && uri[1]=='/'))
+  if (uri[0]=='/' && uri[1]=='/' && uri[2] == '/')
+    {
+      /* Three slashes means network path with a default host name.
+         This is a hack because it does not crok all possible
+         combiantions.  We should better repalce all code bythe parser
+         from http.c.  */
+      keyserver->path = xstrdup (uri+2);
+    }
+  else if(assume_hkp || (uri[0]=='/' && uri[1]=='/'))
     {
       /* Two slashes means network path. */
 
@@ -471,9 +483,10 @@ print_keyrec(int number,struct keyrec *keyrec)
 
   if(keyrec->type)
     {
-      const char *str=pubkey_algo_to_string(keyrec->type);
+      const char *str;
 
-      if(str)
+      str = gcry_pk_algo_name (map_pk_openpgp_to_gcry (keyrec->type));
+      if(str && strcmp (str, "?"))
 	printf("%s ",str);
       else
 	printf("unknown ");
@@ -492,21 +505,27 @@ print_keyrec(int number,struct keyrec *keyrec)
       break;
 
       /* However, if it gave us a long keyid, we can honor
-	 --keyid-format */
+	 --keyid-format via keystr(). */
     case KEYDB_SEARCH_MODE_LONG_KID:
       printf("key %s",keystr(keyrec->desc.u.kid));
       break;
 
+      /* If it gave us a PGP 2.x fingerprint, not much we can do
+	 beyond displaying it. */
     case KEYDB_SEARCH_MODE_FPR16:
       printf("key ");
       for(i=0;i<16;i++)
 	printf("%02X",keyrec->desc.u.fpr[i]);
       break;
 
+      /* If we get a modern fingerprint, we have the most
+	 flexibility. */
     case KEYDB_SEARCH_MODE_FPR20:
-      printf("key ");
-      for(i=0;i<20;i++)
-	printf("%02X",keyrec->desc.u.fpr[i]);
+      {
+	u32 kid[2];
+	keyid_from_fingerprint(keyrec->desc.u.fpr,20,kid);
+	printf("key %s",keystr(kid));
+      }
       break;
 
     default:
@@ -650,7 +669,7 @@ parse_keyrec(char *keystring)
 	  case 'R':
 	    work->flags|=1;
 	    break;
-	    
+
 	  case 'd':
 	  case 'D':
 	    work->flags|=2;
@@ -721,6 +740,8 @@ static int
 show_prompt(KEYDB_SEARCH_DESC *desc,int numdesc,int count,const char *search)
 {
   char *answer;
+
+  fflush (stdout);
 
   if(count && opt.command_fd==-1)
     {
@@ -851,6 +872,9 @@ keyserver_search_prompt(IOBUF buffer,const char *searchstr)
 	      if(i!=count)
 		validcount=0;
 
+              if (opt.with_colons && opt.batch)
+                break;
+
 	      for(;;)
 		{
 		  if(show_prompt(desc,i,validcount?count:0,localstr))
@@ -904,7 +928,7 @@ keyserver_search_prompt(IOBUF buffer,const char *searchstr)
   /* Leave this commented out or now, and perhaps for a very long
      time.  All HKPish servers return HTML error messages for
      no-key-found. */
-  /* 
+  /*
      if(!started)
      log_info(_("keyserver does not support searching\n"));
      else
@@ -947,25 +971,29 @@ direct_uri_map(const char *scheme,unsigned int is_direct)
   return 0;
 }
 
+#if GNUPG_MAJOR_VERSION == 2
+#define GPGKEYS_PREFIX "gpg2keys_"
+#else
 #define GPGKEYS_PREFIX "gpgkeys_"
+#endif
 #define GPGKEYS_CURL GPGKEYS_PREFIX "curl" EXEEXT
 #define GPGKEYS_PREFIX_LEN (strlen(GPGKEYS_CURL))
 #define KEYSERVER_ARGS_KEEP " -o \"%O\" \"%I\""
 #define KEYSERVER_ARGS_NOKEEP " -o \"%o\" \"%i\""
 
-static int 
-keyserver_spawn(enum ks_action action,STRLIST list,KEYDB_SEARCH_DESC *desc,
+static int
+keyserver_spawn(enum ks_action action,strlist_t list,KEYDB_SEARCH_DESC *desc,
 		int count,int *prog,unsigned char **fpr,size_t *fpr_len,
 		struct keyserver_spec *keyserver)
 {
   int ret=0,i,gotversion=0,outofband=0;
-  STRLIST temp;
+  strlist_t temp;
   unsigned int maxlen,buflen;
   char *command,*end,*searchstr=NULL;
   byte *line=NULL;
   struct exec_info *spawn;
   const char *scheme;
-  const char *libexecdir = get_libexecdir ();
+  const char *libexecdir = gnupg_libexecdir ();
 
   assert(keyserver);
 
@@ -991,9 +1019,9 @@ keyserver_spawn(enum ks_action action,STRLIST list,KEYDB_SEARCH_DESC *desc,
      After some more thinking about this we came to the conclusion
      that it is better to load the helpers from the directory where
      the program of this process lives.  Fortunately Windows provides
-     a way to retrieve this and our get_libexecdir function has been
+     a way to retrieve this and our gnupg_libexecdir function has been
      modified to return just this.  Setting the exec-path is not
-     anymore required.  
+     anymore required.
        set_exec_path(libexecdir);
  */
 #else
@@ -1012,9 +1040,7 @@ keyserver_spawn(enum ks_action action,STRLIST list,KEYDB_SEARCH_DESC *desc,
       command=xmalloc(strlen(libexecdir)+strlen(DIRSEP_S)+
 		      GPGKEYS_PREFIX_LEN+strlen(scheme)+3+strlen(EXEEXT)+1);
       strcpy(command,libexecdir);
-#ifndef __VMS
-      strcat (command, DIRSEP_S);
-#endif
+      strcat(command,DIRSEP_S);
     }
 
   end=command+strlen(command);
@@ -1025,7 +1051,7 @@ keyserver_spawn(enum ks_action action,STRLIST list,KEYDB_SEARCH_DESC *desc,
      fetcher that can speak that protocol (this is a problem for
      LDAP). */
 
-  strcat(command,GPGKEYS_PREFIX); 
+  strcat(command,GPGKEYS_PREFIX);
   strcat(command,scheme);
 
   /* This "_uri" thing is in case we need to call a direct handler
@@ -1055,7 +1081,7 @@ keyserver_spawn(enum ks_action action,STRLIST list,KEYDB_SEARCH_DESC *desc,
 	{
 	  command=xrealloc(command,strlen(command)+
 			    strlen(KEYSERVER_ARGS_NOKEEP)+1);
-	  strcat(command,KEYSERVER_ARGS_NOKEEP);  
+	  strcat(command,KEYSERVER_ARGS_NOKEEP);
 	}
 
       ret=exec_write(&spawn,NULL,command,NULL,0,0);
@@ -1171,7 +1197,7 @@ keyserver_spawn(enum ks_action action,STRLIST list,KEYDB_SEARCH_DESC *desc,
 
     case KS_GETNAME:
       {
-	STRLIST key;
+	strlist_t key;
 
 	fprintf(spawn->tochild,"COMMAND GETNAME\n\n");
 
@@ -1193,7 +1219,7 @@ keyserver_spawn(enum ks_action action,STRLIST list,KEYDB_SEARCH_DESC *desc,
 
     case KS_SEND:
       {
-	STRLIST key;
+	strlist_t key;
 
 	/* Note the extra \n here to send an empty keylist block */
 	fprintf(spawn->tochild,"COMMAND SEND\n\n\n");
@@ -1201,7 +1227,7 @@ keyserver_spawn(enum ks_action action,STRLIST list,KEYDB_SEARCH_DESC *desc,
 	for(key=list;key!=NULL;key=key->next)
 	  {
 	    armor_filter_context_t *afx;
-	    IOBUF buffer=iobuf_temp();
+	    IOBUF buffer = iobuf_temp ();
 	    KBNODE block;
 
 	    temp=NULL;
@@ -1215,7 +1241,7 @@ keyserver_spawn(enum ks_action action,STRLIST list,KEYDB_SEARCH_DESC *desc,
 	       will transform the \n to \r\n and we'll end up with the
 	       proper line endings on win32.  This is a no-op on
 	       Unix. */
-	    afx->eol[0]='\n';
+	    afx->eol[0] = '\n';
 	    push_armor_filter (afx, buffer);
             release_armor_context (afx);
 
@@ -1272,48 +1298,23 @@ keyserver_spawn(enum ks_action action,STRLIST list,KEYDB_SEARCH_DESC *desc,
 			{
 			  PKT_user_id *uid=node->pkt->pkt.user_id;
 			  int r;
-			  char *uidstr1,*uidstr2,*uidstr3;
-			  size_t uidstrlen;
 
 			  if(uid->attrib_data)
 			    continue;
 
 			  fprintf(spawn->tochild,"uid:");
 
-			  /* Make sure it's real UTF8.  What happens
-			     here is that first we heuristically try
-			     and convert the string (which may be
-			     mis-coded) into UTF8.  We then bring it
-			     to native and then back to UTF8.  For
-			     true UTF8, this whole process should be
-			     lossless.  For the common Latin-1
-			     mis-encoding, it will become UTF8.  For
-			     other encodings, it will become UTF8 but
-			     with unknown characters quoted.  This
-			     preserves the notion that anything in the
-			     stream to the keyserver handler program
-			     is UTF8. */
-			  uidstr1=string_to_utf8(uid->name);
-			  uidstr2=utf8_to_native(uidstr1,strlen(uidstr1),-1);
-			  uidstr3=native_to_utf8(uidstr2);
-
-			  uidstrlen=strlen(uidstr3);
-
-			  /* Quote ':', '%', and anything not
-			     printable ASCII */
-			  for(r=0;r<uidstrlen;r++)
+			  /* Quote ':', '%', and any 8-bit
+			     characters */
+			  for(r=0;r<uid->len;r++)
 			    {
-			      if(uidstr3[r]==':' || uidstr3[r]=='%'
-				 || uidstr3[r]<' ' || uidstr3[r]>'~')
+			      if(uid->name[r]==':' || uid->name[r]=='%'
+				 || uid->name[r]&0x80)
 				fprintf(spawn->tochild,"%%%02X",
-					(byte)uidstr3[r]);
+					(byte)uid->name[r]);
 			      else
-				fprintf(spawn->tochild,"%c",uidstr3[r]);
+				fprintf(spawn->tochild,"%c",uid->name[r]);
 			    }
-
-			  xfree(uidstr1);
-			  xfree(uidstr2);
-			  xfree(uidstr3);
 
 			  fprintf(spawn->tochild,":%u:%u:",
 				  uid->created,uid->expiredate);
@@ -1383,7 +1384,7 @@ keyserver_spawn(enum ks_action action,STRLIST list,KEYDB_SEARCH_DESC *desc,
 
     case KS_SEARCH:
       {
-	STRLIST key;
+	strlist_t key;
 
 	fprintf(spawn->tochild,"COMMAND SEARCH\n\n");
 
@@ -1440,7 +1441,7 @@ keyserver_spawn(enum ks_action action,STRLIST list,KEYDB_SEARCH_DESC *desc,
       maxlen=1024;
       if(iobuf_read_line(spawn->fromchild,&line,&buflen,&maxlen)==0)
 	{
-	  ret=G10ERR_READ_FILE;
+	  ret = gpg_error_from_syserror ();
 	  goto fail; /* i.e. EOF */
 	}
 
@@ -1450,7 +1451,7 @@ keyserver_spawn(enum ks_action action,STRLIST list,KEYDB_SEARCH_DESC *desc,
       plen=strlen(ptr);
       while(plen>0 && ascii_isspace(ptr[plen-1]))
 	plen--;
-      ptr[plen]='\0';
+      plen[ptr]='\0';
 
       if(*ptr=='\0')
 	break;
@@ -1531,8 +1532,8 @@ keyserver_spawn(enum ks_action action,STRLIST list,KEYDB_SEARCH_DESC *desc,
   return ret;
 }
 
-static int 
-keyserver_work(enum ks_action action,STRLIST list,KEYDB_SEARCH_DESC *desc,
+static int
+keyserver_work(enum ks_action action,strlist_t list,KEYDB_SEARCH_DESC *desc,
 	       int count,unsigned char **fpr,size_t *fpr_len,
 	       struct keyserver_spec *keyserver)
 {
@@ -1601,10 +1602,10 @@ keyserver_work(enum ks_action action,STRLIST list,KEYDB_SEARCH_DESC *desc,
 #endif /* ! DISABLE_KEYSERVER_HELPERS*/
 }
 
-int 
-keyserver_export(STRLIST users)
+int
+keyserver_export(strlist_t users)
 {
-  STRLIST sl=NULL;
+  strlist_t sl=NULL;
   KEYDB_SEARCH_DESC desc;
   int rc=0;
 
@@ -1633,8 +1634,8 @@ keyserver_export(STRLIST users)
   return rc;
 }
 
-int 
-keyserver_import(STRLIST users)
+int
+keyserver_import(strlist_t users)
 {
   KEYDB_SEARCH_DESC *desc;
   int num=100,count=0;
@@ -1693,7 +1694,7 @@ keyserver_import_fprint(const byte *fprint,size_t fprint_len,
   return keyserver_work(KS_GET,NULL,&desc,1,NULL,NULL,keyserver);
 }
 
-int 
+int
 keyserver_import_keyid(u32 *keyid,struct keyserver_spec *keyserver)
 {
   KEYDB_SEARCH_DESC desc;
@@ -1708,14 +1709,14 @@ keyserver_import_keyid(u32 *keyid,struct keyserver_spec *keyserver)
 }
 
 /* code mostly stolen from do_export_stream */
-static int 
-keyidlist(STRLIST users,KEYDB_SEARCH_DESC **klist,int *count,int fakev3)
+static int
+keyidlist(strlist_t users,KEYDB_SEARCH_DESC **klist,int *count,int fakev3)
 {
   int rc=0,ndesc,num=100;
   KBNODE keyblock=NULL,node;
   KEYDB_HANDLE kdbhd;
   KEYDB_SEARCH_DESC *desc;
-  STRLIST sl;
+  strlist_t sl;
 
   *count=0;
 
@@ -1731,10 +1732,10 @@ keyidlist(STRLIST users,KEYDB_SEARCH_DESC **klist,int *count,int fakev3)
     }
   else
     {
-      for (ndesc=0, sl=users; sl; sl = sl->next, ndesc++) 
+      for (ndesc=0, sl=users; sl; sl = sl->next, ndesc++)
 	;
       desc = xmalloc ( ndesc * sizeof *desc);
-        
+
       for (ndesc=0, sl=users; sl; sl = sl->next)
 	{
 	  if(classify_user_id (sl->d, desc+ndesc))
@@ -1747,7 +1748,7 @@ keyidlist(STRLIST users,KEYDB_SEARCH_DESC **klist,int *count,int fakev3)
 
   while (!(rc = keydb_search (kdbhd, desc, ndesc)))
     {
-      if (!users) 
+      if (!users)
 	desc[0].mode = KEYDB_SEARCH_MODE_NEXT;
 
       /* read the keyblock */
@@ -1771,8 +1772,8 @@ keyidlist(STRLIST users,KEYDB_SEARCH_DESC **klist,int *count,int fakev3)
 	     node->pkt->pkt.public_key->version>=4)
 	    {
 	      (*klist)[*count].mode=KEYDB_SEARCH_MODE_LONG_KID;
-	      mpi_get_keyid(node->pkt->pkt.public_key->pkey[0],
-			    (*klist)[*count].u.kid);
+	      v3_keyid (node->pkt->pkt.public_key->pkey[0],
+                        (*klist)[*count].u.kid);
 	      (*count)++;
 
 	      if(*count==num)
@@ -1850,7 +1851,7 @@ keyidlist(STRLIST users,KEYDB_SEARCH_DESC **klist,int *count,int fakev3)
 
   if(rc==-1)
     rc=0;
-  
+
  leave:
   if(rc)
     xfree(*klist);
@@ -1865,7 +1866,7 @@ keyidlist(STRLIST users,KEYDB_SEARCH_DESC **klist,int *count,int fakev3)
    usernames to refresh only part of the keyring. */
 
 int
-keyserver_refresh(STRLIST users)
+keyserver_refresh(strlist_t users)
 {
   int rc,count,numdesc,fakev3=0;
   KEYDB_SEARCH_DESC *desc;
@@ -1954,7 +1955,7 @@ keyserver_refresh(STRLIST users)
 }
 
 int
-keyserver_search(STRLIST tokens)
+keyserver_search(strlist_t tokens)
 {
   if(tokens)
     return keyserver_work(KS_SEARCH,tokens,NULL,0,NULL,NULL,opt.keyserver);
@@ -1963,10 +1964,10 @@ keyserver_search(STRLIST tokens)
 }
 
 int
-keyserver_fetch(STRLIST urilist)
+keyserver_fetch(strlist_t urilist)
 {
   KEYDB_SEARCH_DESC desc;
-  STRLIST sl;
+  strlist_t sl;
   unsigned int options=opt.keyserver_options.import_options;
 
   /* Switch on fast-import, since fetch can handle more than one
@@ -2023,8 +2024,15 @@ keyserver_import_cert(const char *name,unsigned char **fpr,size_t *fpr_len)
   if(domain)
     *domain='.';
 
-  type=get_cert(look,max_cert_size,&key,fpr,fpr_len,&url);
-  if(type==1)
+  type=get_dns_cert(look,max_cert_size,&key,fpr,fpr_len,&url);
+  if (!type || type == -1)
+    {
+      /* There might be an error in res_query which leads to an error
+         return (-1) in the case that nothing was found.  Thus we take
+         all errors as key not found.  */
+      rc = G10ERR_NO_PUBKEY;
+    }
+  else if (type==1)
     {
       int armor_status=opt.no_armor;
 
@@ -2082,26 +2090,30 @@ int
 keyserver_import_pka(const char *name,unsigned char **fpr,size_t *fpr_len)
 {
   char *uri;
-  int rc=-1;
+  int rc = G10ERR_NO_PUBKEY;
 
-  *fpr=xmalloc(20);
-  *fpr_len=20;
+  *fpr = xmalloc (20);
+  *fpr_len = 20;
 
   uri = get_pka_info (name, *fpr);
-  if (uri)
+  if (uri && *uri)
     {
+      /* An URI is available.  Lookup the key. */
       struct keyserver_spec *spec;
       spec = parse_keyserver_uri (uri, 1, NULL, 0);
       if (spec)
 	{
-	  rc=keyserver_import_fprint (*fpr, 20, spec);
+	  rc = keyserver_import_fprint (*fpr, 20, spec);
 	  free_keyserver_spec (spec);
 	}
       xfree (uri);
     }
 
-  if(rc!=0)
-    xfree(*fpr);
+  if (rc)
+    {
+      xfree(*fpr);
+      *fpr = NULL;
+    }
 
   return rc;
 }
@@ -2111,7 +2123,7 @@ int
 keyserver_import_name(const char *name,unsigned char **fpr,size_t *fpr_len,
 		      struct keyserver_spec *keyserver)
 {
-  STRLIST list=NULL;
+  strlist_t list=NULL;
   int rc;
 
   append_to_strlist(&list,name);
@@ -2129,7 +2141,7 @@ keyserver_import_ldap(const char *name,unsigned char **fpr,size_t *fpr_len)
 {
   char *domain;
   struct keyserver_spec *keyserver;
-  STRLIST list=NULL;
+  strlist_t list=NULL;
   int rc,hostlen=1;
 #ifdef USE_DNS_SRV
   struct srventry *srvlist=NULL;
@@ -2171,7 +2183,7 @@ keyserver_import_ldap(const char *name,unsigned char **fpr,size_t *fpr_len)
 	  snprintf(port,7,":%u",srvlist[i].port);
 	  strcat(keyserver->host,port);
 	}
-	
+
       strcat(keyserver->host," ");
     }
 
@@ -2187,7 +2199,7 @@ keyserver_import_ldap(const char *name,unsigned char **fpr,size_t *fpr_len)
   strcat(keyserver->host,domain);
 
   append_to_strlist(&list,name);
-    
+
   rc=keyserver_work(KS_GETNAME,list,NULL,0,fpr,fpr_len,keyserver);
 
   free_strlist(list);
